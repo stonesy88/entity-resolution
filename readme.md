@@ -32,7 +32,7 @@ flowchart TD
 
 | Component | Purpose |
 |------------|----------|
-| **Kafka (Bitnami, KRaft mode)** | Event backbone |
+| **Kafka** | Event backbone |
 | **Schema Registry** | Avro schema contracts for all topics |
 | **ShadowTraffic** | Synthetic SoR data generator |
 | **Kafka-UI** | Browser UI to inspect topics and schemas |
