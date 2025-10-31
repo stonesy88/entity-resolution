@@ -8,27 +8,25 @@ It combines **Kafka (KRaft)**, **Splink**, **Memgraph**, and **ShadowTraffic** t
 
 ## Architecture Overview
 
-                            ┌────────────────┐
-                            │ ShadowTraffic  │  →  Synthetic data generator (EHR, CRM, Billing, Claims, Policies)
-                            └────────────────┘
-                                    │
-                                    ▼
-                            ┌────────────────┐
-                            │  Kafka (KRaft) │  ← event backbone
-                            └────────────────┘
-                                     │ │
-                            ┌────────┘ └────────┐
-                            ▼                   ▼
-Standardisation Deterministic matching stream (Flink / Kafka Streams / ksqlDB)
-                                    │
-                                    ▼
-                        Probabilistic matching (Splink)
-                                    │
-                                    ▼
-                        Graph linking (Memgraph)
-                                    │
-                                    ▼
-                        potential-matches topic
+```mermaid
+flowchart TD
+  subgraph S[ShadowTraffic]
+  end
+  subgraph K[Kafka (KRaft)]
+  end
+  subgraph S1[Standardization Stream]
+  end
+  subgraph D[Deterministic Matching]
+  end
+  subgraph P[Probabilistic Matching (Splink)]
+  end
+  subgraph M[Graph Linking (Memgraph)]
+  end
+  subgraph PM[potential-matches topic]
+  end
+
+  S --> K --> S1 & D
+  D --> P --> M --> PM
 
 ---
 
