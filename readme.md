@@ -12,7 +12,7 @@ It combines **Kafka (KRaft)**, **Splink**, **Memgraph**, and **ShadowTraffic** t
 flowchart TD
   S[ShadowTraffic] --> K[Kafka]
   K --> S1[Standardisation Stream]
-  K --> D[Deterministic Matching]
+  S1 --> D[Deterministic Matching]
   D --> P[Probabilistic Matching - Splink]
   P --> M[Graph Linking - Memgraph]
   M --> PM[potential-matches topic]
