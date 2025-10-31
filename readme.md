@@ -12,15 +12,15 @@ It combines **Kafka (KRaft)**, **Splink**, **Memgraph**, and **ShadowTraffic** t
 flowchart TD
   subgraph S[ShadowTraffic]
   end
-  subgraph K[Kafka (KRaft)]
+  subgraph K[Kafka]
   end
-  subgraph S1[Standardization Stream]
+  subgraph S1[Standardisation Stream]
   end
   subgraph D[Deterministic Matching]
   end
-  subgraph P[Probabilistic Matching (Splink)]
+  subgraph P[Probabilistic Matching Splink]
   end
-  subgraph M[Graph Linking (Memgraph)]
+  subgraph M[Graph Linking Memgraph]
   end
   subgraph PM[potential-matches topic]
   end
@@ -33,7 +33,7 @@ flowchart TD
 1. **Ingestion:** ShadowTraffic publishes synthetic customer records from multiple SoRs to Kafka topics.  
 2. **Standardisation:** Cleans and normalises data into a canonical `staged.customer` topic.  
 3. **Deterministic matching:** Exact rules (e.g., National ID + DOB) create `match.deterministic` events.  
-4. **Probabilistic matching:** [Splink(https://moj-analytical-services.github.io/splink/index.html)] applies Fellegi-Sunter scoring to create `match.probabilistic` events.  
+4. **Probabilistic matching:** [Splink](https://moj-analytical-services.github.io/splink/index.html) applies Fellegi-Sunter scoring to create `match.probabilistic` events.
 5. **Graph resolution:** Memgraph merges deterministic and probabilistic links into connected components.  
 6. **Output:** When all phases complete, a `potential-matches` event is emitted for review or merge.
 
