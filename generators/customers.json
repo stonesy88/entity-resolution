@@ -1,0 +1,197 @@
+{
+  "connections": {
+    "kafka": {
+      "type": "kafka",
+      "bootstrapServers": "kafka:9092",
+      "schemaRegistry": { "url": "http://schema-registry:8081" },
+      "topicPolicy": "auto"
+    }
+  },
+
+  "globals": {
+    "duplicationRate": 0.18,
+    "moveRate": 0.07,
+    "nameChangeRate": 0.02,
+    "typoRate": 0.05,
+    "nicknameRate": 0.08,
+
+    "familyPolicyRate": 0.35,
+    "crmPolicyReferenceRate": 0.65,
+    "billingPolicyReferenceRate": 0.8,
+    "diffSurnameInFamilyRate": 0.22,
+    "diffAddressInFamilyRate": 0.15
+  },
+
+  "generators": [
+    {
+      "name": "policies",
+      "connection": "kafka",
+      "topic": "raw.policy",
+      "throughputPerSecond": 4,
+      "schema": {
+        "policy_id": { "_gen": "stringPrefix", "prefix": "POL-", "of": { "_gen": "ulid" } },
+        "family_id": { "_gen": "uuid" },
+        "type": { "_gen": "oneOf", "values": ["INDIVIDUAL","FAMILY"], "weights": [1 - "{{globals.familyPolicyRate}}", "{{globals.familyPolicyRate}}"] },
+        "effective_date": { "_gen": "date", "min": "2018-01-01", "max": "2025-01-01" },
+        "expiry_date": { "_gen": "dateAfter", "from": "{{effective_date}}", "minDays": 180, "maxDays": 1460 },
+        "status": { "_gen": "oneOf", "values": ["ACTIVE","LAPSED","PENDING"], "weights": [0.82,0.12,0.06] },
+        "product": { "_gen": "oneOf", "values": ["Core","Core+Dental","Premium","Premium+Family"] }
+      }
+    },
+
+    {
+      "name": "crm_customers",
+      "connection": "kafka",
+      "topic": "raw.customer.crm",
+      "throughputPerSecond": 12,
+      "lookup": { "scope": "committed" },
+      "schema": {
+        "source": "crm",
+        "source_id": { "_gen": "uuid" },
+        "ingest_ts": { "_gen": "nowEpochMillis" },
+
+        "role": { "_gen": "oneOf", "values": ["PRIMARY","SPOUSE","DEPENDENT"], "weights": [0.6,0.25,0.15] },
+
+        "policy_id": {
+          "_gen": "maybeFrom",
+          "rate": "{{globals.crmPolicyReferenceRate}}",
+          "from": "{{lookup.policies.policy_id}}"
+        },
+        "family_id": {
+          "_gen": "maybeFrom",
+          "rate": "{{globals.crmPolicyReferenceRate}}",
+          "from": "{{lookup.policies.family_id}}"
+        },
+
+        "given_name": { "_gen": "firstName" },
+
+        "family_name": {
+          "_gen": "conditional",
+          "if": {
+            "and": [
+              { "eq": [ "{{role}}", "SPOUSE" ] },
+              { "chance": "{{globals.diffSurnameInFamilyRate}}" }
+            ]
+          },
+          "then": { "_gen": "lastName" },
+          "else": { "_gen": "lastName" }
+        },
+
+        "dob": { "_gen": "date", "min": "1935-01-01", "max": "2015-12-31" },
+        "gender": { "_gen": "oneOf", "values": ["F","M","X",null], "weights": [0.49,0.49,0.01,0.01] },
+        "email": { "_gen": "email", "domain": "example.org" },
+        "phone": { "_gen": "phoneE164", "country": "GB" },
+
+        "address": {
+          "_gen": "conditional",
+          "if": {
+            "and": [
+              { "in": [ "{{role}}", ["SPOUSE","DEPENDENT"] ] },
+              { "chance": "{{globals.diffAddressInFamilyRate}}" }
+            ]
+          },
+          "then": { "_gen": "ukAddress" },
+          "else": { "_gen": "ukAddress" }
+        },
+
+        "national_id_hash": { "_gen": "sha256", "of": { "_gen": "nino" }, "salt": "static-dev-salt" },
+        "consent_flags": { "_gen": "mapBoolean", "keys": ["marketing","research"] },
+
+        "record_key": { "_gen": "stableKey", "fields": ["given_name","family_name","dob"] }
+      }
+    },
+
+    {
+      "name": "billing_accounts",
+      "connection": "kafka",
+      "topic": "raw.customer.billing",
+      "throughputPerSecond": 9,
+      "lookup": { "scope": "committed" },
+      "schema": {
+        "source": "billing",
+        "source_id": { "_gen": "uuid" },
+        "ingest_ts": { "_gen": "nowEpochMillis" },
+
+        "policy_id": {
+          "_gen": "maybeFrom",
+          "rate": "{{globals.billingPolicyReferenceRate}}",
+          "from": "{{lookup.policies.policy_id}}"
+        },
+        "family_id": {
+          "_gen": "maybeFrom",
+          "rate": "{{globals.billingPolicyReferenceRate}}",
+          "from": "{{lookup.policies.family_id}}"
+        },
+
+        "given_name": { "_gen": "maybeNicknameOf", "from": "{{lookup.crm_customers.given_name}}", "rate": "{{globals.nicknameRate}}" },
+        "family_name": { "_gen": "maybeTypoOf", "from": "{{lookup.crm_customers.family_name}}", "rate": "{{globals.typoRate}}" },
+        "dob": "{{lookup.crm_customers.dob}}",
+
+        "email": { "_gen": "maybeNullOr", "of": { "_gen": "email" }, "nullRate": 0.3 },
+        "phone": { "_gen": "maybeTypoOf", "from": "{{lookup.crm_customers.phone}}", "rate": 0.03 },
+
+        "address": {
+          "_gen": "conditional",
+          "if": { "chance": "{{globals.moveRate}}" },
+          "then": { "_gen": "ukAddress" },
+          "else": "{{lookup.crm_customers.address}}"
+        },
+
+        "national_id_hash": "{{lookup.crm_customers.national_id_hash}}",
+        "consent_flags": { "_gen": "mapBoolean", "keys": ["paperless"], "trueRate": 0.6 },
+
+        "record_key": "{{lookup.crm_customers.record_key}}"
+      }
+    },
+
+    {
+      "name": "claims_portal",
+      "connection": "kafka",
+      "topic": "raw.customer.claims",
+      "throughputPerSecond": 7,
+      "lookup": { "scope": "committed" },
+      "schema": {
+        "source": "claims",
+        "source_id": { "_gen": "ulid" },
+        "ingest_ts": { "_gen": "nowEpochMillis" },
+
+        "policy_id": "{{lookup.policies.policy_id}}",
+        "family_id": "{{lookup.policies.family_id}}",
+
+        "role": { "_gen": "oneOf", "values": ["PRIMARY","SPOUSE","DEPENDENT"], "weights": [0.55,0.3,0.15] },
+
+        "given_name": {
+          "_gen": "maybeNicknameOf",
+          "from": "{{lookup.crm_customers.given_name}}",
+          "rate": 0.04
+        },
+        "family_name": {
+          "_gen": "conditional",
+          "if": {
+            "and": [
+              { "eq": [ "{{role}}", "SPOUSE" ] },
+              { "chance": "{{globals.diffSurnameInFamilyRate}}" }
+            ]
+          },
+          "then": { "_gen": "lastName" },
+          "else": "{{lookup.crm_customers.family_name}}"
+        },
+
+        "dob": "{{lookup.crm_customers.dob}}",
+        "email": { "_gen": "maybeTypoOf", "from": "{{lookup.crm_customers.email}}", "rate": 0.06 },
+        "phone": { "_gen": "maybeNullOr", "of": "{{lookup.billing_accounts.phone}}", "nullRate": 0.25 },
+
+        "address": {
+          "_gen": "conditional",
+          "if": { "chance": "{{globals.diffAddressInFamilyRate}}" },
+          "then": { "_gen": "ukAddress" },
+          "else": "{{lookup.billing_accounts.address}}"
+        },
+
+        "national_id_hash": "{{lookup.crm_customers.national_id_hash}}",
+
+        "incident_ts": { "_gen": "nowEpochMillisSkewed", "skewDays": 120 }
+      }
+    }
+  ]
+}
