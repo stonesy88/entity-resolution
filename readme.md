@@ -30,6 +30,7 @@ Standardisation Deterministic matching stream (Flink / Kafka Streams / ksqlDB)
                                     ▼
                         potential-matches topic
 
+---
 
 1. **Ingestion:** ShadowTraffic publishes synthetic customer records from multiple SoRs to Kafka topics.  
 2. **Standardisation:** Cleans and normalises data into a canonical `staged.customer` topic.  
