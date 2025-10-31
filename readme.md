@@ -10,23 +10,12 @@ It combines **Kafka (KRaft)**, **Splink**, **Memgraph**, and **ShadowTraffic** t
 
 ```mermaid
 flowchart TD
-  subgraph S[ShadowTraffic]
-  end
-  subgraph K[Kafka]
-  end
-  subgraph S1[Standardisation Stream]
-  end
-  subgraph D[Deterministic Matching]
-  end
-  subgraph P[Probabilistic Matching Splink]
-  end
-  subgraph M[Graph Linking Memgraph]
-  end
-  subgraph PM[potential-matches topic]
-  end
-
-  S --> K --> S1 & D
-  D --> P --> M --> PM
+  S[ShadowTraffic] --> K[Kafka]
+  K --> S1[Standardisation Stream]
+  K --> D[Deterministic Matching]
+  D --> P[Probabilistic Matching - Splink]
+  P --> M[Graph Linking - Memgraph]
+  M --> PM[potential-matches topic]
 
 ---
 
