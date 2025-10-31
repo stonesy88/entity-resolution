@@ -1,0 +1,58 @@
+# --------------------------------------------------------------------
+# Core: prevent exposing secrets, licenses, and local environment files
+# --------------------------------------------------------------------
+.env
+license.env
+*.key
+*.pem
+*.crt
+*.cer
+*.pfx
+*.secrets.json
+*.private.json
+
+# --------------------------------------------------------------------
+# Docker artifacts and local volumes
+# --------------------------------------------------------------------
+# Avoid committing local data, logs, or Kafka state
+*/**/data/
+*/**/logs/
+kafka_data/
+memgraph_data/
+volumes/
+tmp/
+*.pid
+
+# --------------------------------------------------------------------
+# Python / Jupyter (if you use Splink or analysis notebooks)
+# --------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.ipynb_checkpoints
+.venv/
+venv/
+.envrc
+
+# --------------------------------------------------------------------
+# Node / JS tools (if you add UI or Kafka UI custom scripts)
+# --------------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --------------------------------------------------------------------
+# IDEs / OS junk
+# --------------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# --------------------------------------------------------------------
+# Backup / temporary files
+# --------------------------------------------------------------------
+*.bak
+*.tmp
+*.old
