@@ -17,9 +17,6 @@ flowchart TD
   P --> M[Graph Linking - Memgraph]
   M --> PM[potential-matches topic]
 
-  S --> K --> S1 & D
-  D --> P --> M --> PM
-
 ```
 
 1. **Ingestion:** ShadowTraffic publishes synthetic customer records from multiple SoRs to Kafka topics.  
