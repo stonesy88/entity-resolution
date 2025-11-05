@@ -2,7 +2,7 @@
 
 This project demonstrates a **real-time entity resolution pipeline** for a hypothetical enterprise org. 
 
-It combines **Kafka (KRaft)**, **Splink**, **Memgraph**, and **ShadowTraffic** to identify when records from multiple systems of record (SoRs) refer to the same entity.
+It combines **Kafka**, **Splink**, **Memgraph**, and **ShadowTraffic** to identify when records from multiple systems of record (SoRs) refer to the same entity.
 
 ---
 
@@ -11,7 +11,7 @@ It combines **Kafka (KRaft)**, **Splink**, **Memgraph**, and **ShadowTraffic** t
 ```mermaid
 flowchart TD
   S[ShadowTraffic] --> K[Kafka]
-  K --> S1[Standardisation Stream]
+  K --> S1[Clean/Standardisation Stream]
   S1 --> D[Deterministic Matching]
   D --> P[Probabilistic Matching - Splink]
   P --> M[Graph Linking - Memgraph]
@@ -19,11 +19,11 @@ flowchart TD
 
 ```
 
-1. **Ingestion:** ShadowTraffic publishes synthetic customer records from multiple SoRs to Kafka topics.  
-2. **Standardisation:** Cleans and normalises data into a canonical `staged.customer` topic.  
+1. **Ingestion:** ShadowTraffic publishes synthetic customer records from multiple SoRs to Kafka topics. - Work in progress, requires license. 
+2. **Standardisation:** Cleans, normalises and enriches data into source system topic, for fan-in to canonical `staged.customer` topic. I am using metaphones here for forename/surname, to improve splink record linking performance. We also produce blocking rules / keys here for match reduction technique.
 3. **Deterministic matching:** Exact rules (e.g., National ID + DOB) create `match.deterministic` events.  
-4. **Probabilistic matching:** [Splink](https://moj-analytical-services.github.io/splink/index.html) applies Fellegi-Sunter scoring to create `match.probabilistic` events.
-5. **Graph resolution:** Memgraph merges deterministic and probabilistic links into connected components.  
+4. **Probabilistic matching:** [Splink](https://moj-analytical-services.github.io/splink/index.html) applies Fellegi-Sunter scoring to create `match.probabilistic` events. Will use probability scores out of splink to populate weights of edges/nodes in graph.
+5. **Graph resolution:** Memgraph merges deterministic and probabilistic links into connected components. Using a combination of Jaccard, pairwise similarity
 6. **Output:** When all phases complete, a `potential-matches` event is emitted for review or merge.
 
 ---
@@ -47,8 +47,6 @@ The generator at generators/customers.json defines:
 
 Multiple SoRs (CRM, Billing, Claims)
 
-Family policies (raw.policy) with policy_id and family_id
-
 Controlled duplication, nicknames, typos, address changes
 
 Cross-system linkages for realistic entity resolution tests
@@ -59,5 +57,4 @@ You can tune the realism by editing the globals section:
 "familyPolicyRate": 0.35,
 "diffSurnameInFamilyRate": 0.22
 
-ShadowTraffic auto-registers Avro schemas in the Schema Registry and publishes JSON/Avro events to Kafka.
 
