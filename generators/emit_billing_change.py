@@ -45,7 +45,6 @@ def make_event(
         "email": email,
         "phone": phone,
         "address": address,
-        "postcode": postcode,
         "national_id": national_id,   # raw here; cleaner will hash
         "policy_id": policy_id,
     }
