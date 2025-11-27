@@ -55,17 +55,14 @@ services:
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
       KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
 
-volumes:
-  kafka_data:
-
-
- ## shadowtraffic:
-  # image: ghcr.io/shadowtraffic/shadowtraffic:latest
-  # container_name: shadowtraffic
-  #  depends_on: [kafka, schema-registry]
-   # env_file:
-    #  - ./license.env
-    #volumes:
-     # - ./generators:/cfg
-    #command: ["--config", "/cfg/customers.json", "--metrics-port", "9400"]
-    #ports: ["9400:9400"]
+  quine:
+    image: thatdot/quine:latest
+    container_name: quine
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./quine:/quine
+    command: ["-r", "/quine/billing-ingest.yaml"]
+  

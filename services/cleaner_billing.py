@@ -1,202 +1,303 @@
-from confluent_kafka import Consumer, Producer
+# Cleaner needs fixing to match Shadow Traffic changes TBD!
+
+
+#!/usr/bin/env python
 import hashlib
 import json
 import os
 import re
-from typing import Optional
+import sys
+import csv
+from datetime import datetime
+from typing import Any, Dict, Optional
+
+from confluent_kafka import Consumer, Producer
 from metaphone import doublemetaphone
+from nameparser import HumanName
 import phonenumbers
-from ollama import chat
 from pydantic import BaseModel
 
-RAW_TOPIC = "raw.customer.billing"
-ENR_TOPIC = "enriched.customer.billing"
-BOOTSTRAP = "localhost:9092"
+# ---------------------------------------------------------------------------
+# Nickname mapping (from names.csv)
+# ---------------------------------------------------------------------------
 
-c = Consumer({
-    "bootstrap.servers": BOOTSTRAP,
-    "group.id": "cleaner-billing",
-    "auto.offset.reset": "earliest",
-})
-p = Producer({
-    "bootstrap.servers": BOOTSTRAP,
-    "enable.idempotence": True,
-    "linger.ms": 10,
-    "compression.type": "lz4",
-})
+NICKNAME_CSV = os.getenv("NICKNAME_CSV", "./services/names.csv")
+
+
+def load_nickname_map(csv_path: str) -> dict[str, str]:
+    nick_to_canon: dict[str, str] = {}
+
+    try:
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            # Expect headers: name1, relationship, name2
+            required = {"name1", "relationship", "name2"}
+            if not reader.fieldnames or not required.issubset(
+                set(h.lower() for h in reader.fieldnames)
+            ):
+                print(
+                    f"Unexpected headers in {csv_path}: {reader.fieldnames}",
+                    file=sys.stderr,
+                )
+
+            for row in reader:
+                name1 = (row.get("name1") or "").strip().lower()
+                rel = (row.get("relationship") or "").strip().lower()
+                name2 = (row.get("name2") or "").strip().lower()
+
+                if rel != "has_nickname":
+                    continue
+
+                if not name1 or not name2:
+                    continue
+
+                canonical = name1
+                nickname = name2
+
+                # Prefer the longest canonical if collisions
+                if (
+                    nickname not in nick_to_canon
+                    or len(canonical) > len(nick_to_canon[nickname])
+                ):
+                    nick_to_canon[nickname] = canonical
+
+    except FileNotFoundError:
+        print(
+            f"Nickname CSV not found: {csv_path} — starting with empty map",
+            file=sys.stderr,
+        )
+
+    print(f"Loaded {len(nick_to_canon)} nickname mappings from {csv_path}")
+    return nick_to_canon
+
+
+NICK_CANON = load_nickname_map(NICKNAME_CSV)
+
+# ---------------------------------------------------------------------------
+# Kafka config
+# ---------------------------------------------------------------------------
+
+RAW_TOPIC = os.getenv("RAW_TOPIC", "raw.customer")
+ENR_TOPIC = os.getenv("ENR_TOPIC", "enriched.customer")
+BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
+GROUP_ID = os.getenv("CLEANER_GROUP_ID", "cleaner")
+
+# ---------------------------------------------------------------------------
+# Email, hashing, name, phone, DOB
+# ---------------------------------------------------------------------------
 
 email_re = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-country_aliases = {
-    "UK": "UNITED KINGDOM",
-    "UNITED KINGDOM": "UNITED KINGDOM",
-    "GREAT BRITAIN": "UNITED KINGDOM",
-    "ENGLAND": "UNITED KINGDOM",
-    "SCOTLAND": "UNITED KINGDOM",
-    "WALES": "UNITED KINGDOM",
-    "NORTHERN IRELAND": "UNITED KINGDOM",
-}
 
-DEFAULT_OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
+def sha256(s: str) -> str:
+    """Hash for PII IDs."""
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
-class StandardUkAddress(BaseModel):
-    company_name: Optional[str] = None
-    department: Optional[str] = None
-    address_line_1: Optional[str] = None
-    address_line_2: Optional[str] = None
-    post_town: Optional[str] = None
-    postal_code: Optional[str] = None
-    country: Optional[str] = "UNITED KINGDOM"
+def normalise_name(raw: str) -> Dict[str, Any]:
+    if not raw:
+        return {
+            "given_name": None,
+            "family_name": None,
+            "given_name_canonical": None,
+            "surname_phonetic": None,
+        }
 
-def _normalise_postcode(pc: Optional[str]) -> Optional[str]:
-    if not pc:
-        return None
-    clean = re.sub(r"\s+", "", pc.upper())
-    if len(clean) <= 3:
-        return clean
-    return f"{clean[:-3]} {clean[-3:]}"
+    n = HumanName(raw)
+    given = n.first.strip().title() if n.first else None
+    family = n.last.strip().title() if n.last else None
 
-def _normalised_country(country: Optional[str]) -> str:
-    if not country:
-        return "UNITED KINGDOM"
-    upper = country.upper()
-    return country_aliases.get(upper, upper)
+    # Canonical name mapping from CSV to determine if a nickname
+    canonical = given
+    if given:
+        lower = given.lower()
+        if lower in NICK_CANON:
+            canonical = NICK_CANON[lower].title()
 
-def _default_uk_address(postcode: Optional[str], country: Optional[str]) -> dict:
+    # Phonetic surname (Double Metaphone)
+    surname_phonetic = doublemetaphone(family)[0] if family else None
+
     return {
-        "company_name": None,
-        "department": None,
-        "address_line_1": None,
-        "address_line_2": None,
-        "post_town": None,
-        "postal_code": _normalise_postcode(postcode),
-        "country": _normalised_country(country),
+        "given_name": given,
+        "family_name": family,
+        "given_name_canonical": canonical,
+        "surname_phonetic": surname_phonetic,
     }
 
-def parse_uk_address_with_ollama(address: Optional[str], postcode: Optional[str], country: Optional[str]) -> dict:
-    if chat is None:
-        return _default_uk_address(postcode, country)
 
-    if not address and not postcode:
-        return _default_uk_address(postcode, country)
-
-    prompt_lines = [
-        "Convert the provided free-form address into structured UK address fields.",
-        "If a value is missing, set it to null.",
-        "Postal codes and country must be uppercase and UK postal codes require a space before the final three characters.",
-        f"Raw address: {address or ''}",
-    ]
-    if postcode:
-        prompt_lines.append(f"Known postcode: {postcode}")
-    if country:
-        prompt_lines.append(f"Known country: {country}")
-    prompt_lines.append("Return only the JSON that matches the provided schema.")
-
-    fallback = _default_uk_address(postcode, country)
+def normalise_phone(raw: str, default_region: str = "GB") -> Optional[str]:
+    if not raw:
+        return None
     try:
-        response = chat(
-            model=DEFAULT_OLLAMA_MODEL,
-            messages=[
-                {"role": "system", "content": "You are an assistant that standardises UK postal addresses for billing records."},
-                {"role": "user", "content": "\n".join(prompt_lines)},
-            ],
-            format=StandardUkAddress.model_json_schema(),
-        )
-        parsed = StandardUkAddress.model_validate_json(response.message.content).model_dump()
-        for key, value in list(parsed.items()):
-            if isinstance(value, str):
-                stripped = value.strip()
-                parsed[key] = stripped or None
-    except Exception:
-        return fallback
-
-    if parsed.get("postal_code"):
-        parsed["postal_code"] = _normalise_postcode(parsed["postal_code"])
-    elif fallback["postal_code"]:
-        parsed["postal_code"] = fallback["postal_code"]
-
-    parsed["country"] = _normalised_country(parsed.get("country")) if parsed.get("country") else fallback["country"]
-    return parsed
-
-def norm_phone(s, region="GB"):
-    try:
-        num = phonenumbers.parse(s, region)
+        num = phonenumbers.parse(raw, default_region)
         if phonenumbers.is_possible_number(num) and phonenumbers.is_valid_number(num):
-            return phonenumbers.format_number(num, phonenumbers.PhoneNumberFormat.E164)
+            return phonenumbers.format_number(
+                num, phonenumbers.PhoneNumberFormat.E164
+            )
     except Exception:
-        pass
+        return None
     return None
 
-def clean(rec):
-    out = {}
-    # required system origin
-    out["source"] = "billing"
-    out["source_id"] = str(rec.get("source_id") or "").strip()
 
-    # names
-    given = str(rec.get("given_name") or "").strip().title()
-    family = str(rec.get("family_name") or "").strip().title()
-    out["given_name"] = given or None
-    out["family_name"] = family or None
-    out["given_name_phonetic"] = doublemetaphone(given)[0] if given else None
-    out["surname_phonetic"] = doublemetaphone(family)[0] if family else None
+def normalise_email(raw: str) -> Optional[str]:
+    if not raw:
+        return None
+    e = raw.strip().lower()
+    return e if email_re.match(e) else None
 
-    # dob (keep as-is if already ISO)
-    dob = str(rec.get("dob") or "").strip()
-    out["dob"] = dob or None
 
-    # email
-    email = str(rec.get("email") or "").strip().lower()
-    out["email"] = email if email_re.match(email) else None
+def normalise_dob(raw: str) -> Optional[str]:
+    if not raw:
+        return None
+    s = raw.strip()
+    # Assume already ISO, else try simple patterns
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
 
-    # phone
-    out["phone_e164"] = norm_phone(rec.get("phone") or "")
 
-    # postcode (UK simple normalisation)
-    pc = str(rec.get("postcode") or "").upper().replace(" ", "")
-    if len(pc) >= 5:
-        out["postcode"] = pc[:-3] + " " + pc[-3:]
-        out["postcode_sector"] = out["postcode"].split(" ")[0]
+# ---------------------------------------------------------------------------
+# Cleaning function
+# ---------------------------------------------------------------------------
+
+
+def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+
+    # Provenance
+    out["source"] = rec.get("source") or "billing"
+    out["source_system"] = rec.get("source_system") or "billing_portal"
+    out["source_id"] = str(rec.get("source_id") or "").strip() or None
+
+    # Event time
+    et = rec.get("event_time")
+    if isinstance(et, (int, float)):
+        out["event_time"] = int(et)
     else:
-        out["postcode"] = None
-        out["postcode_sector"] = None
+        out["event_time"] = int(datetime.utcnow().timestamp() * 1000)
 
-    out["address_standard"] = parse_uk_address_with_ollama(
-        rec.get("address"),
-        out.get("postcode"),
-        rec.get("country"),
+    # Name
+    name_parts = normalise_name(
+        f"{rec.get('given_name','')} {rec.get('family_name','')}".strip()
     )
+    out.update(name_parts)
 
-    # policy & national id
-    policy = str(rec.get("policy_id") or "").upper().replace("-", "")
+    # DOB
+    out["dob"] = normalise_dob(rec.get("dob") or "")
+
+    # Email
+    out["email"] = normalise_email(rec.get("email") or "")
+
+    # Phone
+    out["phone_e164"] = normalise_phone(rec.get("phone") or "")
+
+    # Address (PAF-ish) + postcode + sector
+    addr_raw = rec.get("address") or rec.get("address_line_1") or ""
+    postcode_raw = rec.get("postcode") or rec.get("postal_code") or ""
+    country_raw = rec.get("country")
+
+    addr = parse_uk_address_with_ollama(addr_raw, postcode_raw, country_raw)
+
+    out["company_name"] = addr.get("company_name")
+    out["department"] = addr.get("department")
+    out["address_line_1"] = addr.get("address_line_1")
+    out["address_line_2"] = addr.get("address_line_2")
+    out["post_town"] = addr.get("post_town")
+    out["postcode"] = addr.get("postal_code")
+    out["postcode_sector"] = addr.get("postcode_sector")
+    out["country"] = addr.get("country")
+
+    # Policy & family
+    policy = str(rec.get("policy_id") or "").upper().replace("-", "").strip()
     out["policy_id"] = policy or None
-    nid = str(rec.get("national_id") or "").strip()
-    out["national_id_hash"] = hashlib.sha256(nid.encode()).hexdigest() if nid else None
+    out["family_id"] = rec.get("family_id") or None
 
-    # blocking keys
-    out["bk_nid_dob"]    = f"{out['national_id_hash']}|{out['dob']}" if out.get("national_id_hash") and out.get("dob") else None
-    out["bk_email_dob"]  = f"{out['email']}|{out['dob']}" if out.get("email") and out.get("dob") else None
-    out["bk_phone_sndx"] = f"{out['phone_e164']}|{out['surname_phonetic']}" if out.get("phone_e164") and out.get("surname_phonetic") else None
-    out["bk_policy_dob"] = f"{out['policy_id']}|{out['dob']}" if out.get("policy_id") and out.get("dob") else None
+    # National ID hash
+    nid = str(rec.get("national_id") or "").strip()
+    out["national_id_hash"] = sha256(nid) if nid else None
+
+    # Derived keys
+    dob = out.get("dob")
+    surname_phonetic = out.get("surname_phonetic")
+    email = out.get("email")
+    phone_e164 = out.get("phone_e164")
+    policy_id = out.get("policy_id")
+
+    out["bk_nid_dob"] = (
+        f"{out['national_id_hash']}|{dob}"
+        if out.get("national_id_hash") and dob
+        else None
+    )
+    out["bk_email_dob"] = f"{email}|{dob}" if email and dob else None
+    out["bk_phone_sndx"] = (
+        f"{phone_e164}|{surname_phonetic}" if phone_e164 and surname_phonetic else None
+    )
+    out["bk_policy_dob"] = f"{policy_id}|{dob}" if policy_id and dob else None
+    out["bk_nameYdob"] = (
+        f"{surname_phonetic[:1]}|{dob[:4]}"
+        if surname_phonetic and dob
+        else None
+    )
 
     return out
 
-def run():
-    c.subscribe([RAW_TOPIC])
-    print(f"Cleaning from {RAW_TOPIC} → {ENR_TOPIC}")
-    while True:
-        msg = c.poll(1.0)
-        if msg is None: 
-            continue
-        if msg.error():
-            print("!", msg.error())
-            continue
-        try:
-            rec = json.loads(msg.value().decode("utf-8"))
-            cleaned = clean(rec)
-            p.produce(ENR_TOPIC, json.dumps(cleaned).encode("utf-8"))
-            p.poll(0)
-        except Exception as e:
-            print("! cleaning error:", e)
 
-run()
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
+
+
+def main():
+    consumer_conf = {
+        "bootstrap.servers": BOOTSTRAP,
+        "group.id": GROUP_ID,
+        "auto.offset.reset": "earliest",
+    }
+    producer_conf = {
+        "bootstrap.servers": BOOTSTRAP,
+        "enable.idempotence": True,
+        "linger.ms": 10,
+        "compression.type": "lz4",
+    }
+
+    c = Consumer(consumer_conf)
+    p = Producer(producer_conf)
+
+    print(f"[cleaner] Consuming from {RAW_TOPIC}, producing to {ENR_TOPIC}")
+    c.subscribe([RAW_TOPIC])
+
+    try:
+        while True:
+            msg = c.poll(1.0)
+            if msg is None:
+                continue
+            if msg.error():
+                print("Consumer error:", msg.error(), file=sys.stderr)
+                continue
+
+            try:
+                rec = json.loads(msg.value().decode("utf-8"))
+            except json.JSONDecodeError as e:
+                print("Bad JSON:", e, file=sys.stderr)
+                continue
+
+            cleaned = clean_record(rec)
+
+            p.produce(
+                ENR_TOPIC,
+                key=f"billing:{cleaned.get('source_id','')}".encode("utf-8"),
+                value=json.dumps(cleaned).encode("utf-8"),
+            )
+            p.poll(0)
+
+    except KeyboardInterrupt:
+        print("Shutting down cleaner...")
+    finally:
+        c.close()
+        p.flush(10)
+
+
+if __name__ == "__main__":
+    main()
