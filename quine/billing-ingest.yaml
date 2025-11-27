@@ -1,0 +1,90 @@
+version: 1
+title: Enriched Customer Kafka Ingest
+contributor: you
+summary: Ingest enriched billing customers from Kafka into Quine
+description: >
+  Reads JSON events from the 'enriched.customer.billing' topic and
+  upserts CustomerEvent and MasterCustomer nodes in the graph, using
+  deterministic rules on national_id_hash + DOB, or name + DOB, or
+  name + address to link events to master records.
+
+ingestStreams:
+  - type: KafkaIngest
+    topics:
+      - enriched.customer.billing
+    bootstrapServers: kafka:19092   # or localhost:9092 if Quine runs on host
+    format:
+      type: CypherJson
+      query: |-
+        // $that is the cleaned JSON from Kafka
+        WITH $that AS ev
+
+        // 1) Upsert the event as a unique :CustomerEvent (per source_id + event_time)
+        MATCH (e)
+        WHERE id(e) = idFrom('event', ev.source, ev.source_id, ev.event_time)
+        SET e += ev
+        SET e:CustomerEvent
+
+        // 2) Derive an address_key from address_line_1 + postcode_sector
+        WITH e, ev,
+             toLower(coalesce(ev.address_line_1, '')) AS addr1,
+             coalesce(ev.postcode_sector, '')         AS pc_sec
+        WITH e, ev,
+             CASE
+               WHEN addr1 <> '' AND pc_sec <> ''
+                 THEN addr1 + '|' + pc_sec
+               ELSE null
+             END AS address_key
+
+        // Store address_key on the event node
+        SET e.address_key = address_key
+
+        // Carry variables forward
+        WITH e, ev, address_key
+
+        // 3) Decide master_id based on deterministic rules:
+        //    1) national_id_hash + dob
+        //    2) canonical first + last + dob
+        //    3) canonical first + last + address_key
+        //    4) fallback: unique per event (no deterministic match)
+        WITH e, ev, address_key,
+             CASE
+               WHEN ev.national_id_hash IS NOT NULL
+                AND ev.dob IS NOT NULL
+                 THEN idFrom('master-nid', ev.national_id_hash, ev.dob)
+               WHEN ev.given_name_canonical IS NOT NULL
+                AND ev.family_name IS NOT NULL
+                AND ev.dob IS NOT NULL
+                 THEN idFrom('master-dob', ev.given_name_canonical, ev.family_name, ev.dob)
+               WHEN ev.given_name_canonical IS NOT NULL
+                AND ev.family_name IS NOT NULL
+                AND address_key IS NOT NULL
+                 THEN idFrom('master-addr', ev.given_name_canonical, ev.family_name, address_key)
+               ELSE idFrom('master-src', ev.source, ev.source_id, ev.event_time)
+             END AS master_id
+
+        // 4) Upsert the MasterCustomer node by id
+        MATCH (m)
+        WHERE id(m) = master_id
+        SET m:MasterCustomer
+        SET m.master_id = master_id
+
+        // Prefer to keep existing non-null values where possible
+        SET m.given_name_canonical = coalesce(ev.given_name_canonical, m.given_name_canonical)
+        SET m.family_name          = coalesce(ev.family_name,          m.family_name)
+        SET m.dob                  = coalesce(ev.dob,                  m.dob)
+
+        // address fields from the cleaner
+        SET m.address_line_1       = coalesce(ev.address_line_1,       m.address_line_1)
+        SET m.address_line_2       = coalesce(ev.address_line_2,       m.address_line_2)
+        SET m.post_town            = coalesce(ev.post_town,            m.post_town)
+        SET m.postcode             = coalesce(ev.postcode,             m.postcode)
+        SET m.postcode_sector      = coalesce(ev.postcode_sector,      m.postcode_sector)
+        SET m.country              = coalesce(ev.country,              m.country)
+        SET m.address_key          = coalesce(address_key,             m.address_key)
+
+        SET m.last_seen_at         = timestamp()
+        SET m.source_systems       = coalesce(m.source_systems, []) + ev.source_system
+
+        // 5) Connect the event to its master
+        MERGE (e)-[:INSTANCE_OF]->(m)

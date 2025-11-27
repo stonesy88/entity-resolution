@@ -1,114 +1,191 @@
-{
-    "generators": [
-        {
-            "topic": "people",
-            "fork": {
-                "key": { "_gen": "uuid" },
-                "stagger": { "ms": 500 }
-            },
-            "key": {
-                "_gen": "var", "var": "forkKey"
-            },
-            "value": {},
-            "stateMachine": {
-                "_gen": "stateMachine",
-                "initial": "insert",
-                "merge": { "previous": true },
-                "transitions": {
-                    "insert": {
-                        "_gen": "weightedOneOf",
-                        "choices": [
-                            { "weight": 4, "value": "update" },
-                            { "weight": 1, "value": "delete" }
-                        ]
-                    },
-                    "update": {
-                        "_gen": "oneOf",
-                        "choices": [
-                            "update", "delete"
-                        ]
-                    },
-                    "delete": "insert"
-                },
-                "states": {
-                    "insert": {
-                        "value": {
-                            "op": "c",
-                            "payload": {
-                                "before": null,
-                                "after": {
-                                  
-                                    "id":          { "_gen": "var", "var": "forkKey" },
-                                    "firstName":   { "_gen": "string", "expr": "#{Name.firstName}" },
-                                    "lastName":    { "_gen": "string", "expr": "#{Name.lastName}" },
-                                    "email":       { "_gen": "string", "expr": "#{Internet.emailAddress}" },
-                                    "dob":         { "_gen": "string", "expr": "#{Date.birthday '18','65'}",  "locale": ["en", "gb"] },
-                                    "phone":       { "_gen": "string", "expr": "#{PhoneNumber.cellPhone}",    "locale": ["en", "gb"] },
-                                    "address":     { "_gen": "string", "expr": "#{Address.streetAddress}",    "locale": ["en", "gb"] },
-                                    "city":        { "_gen": "string", "expr": "#{Address.city}",             "locale": ["en", "gb"] },
-                                    "county":      { "_gen": "string", "expr": "#{Address.county}",           "locale": ["en", "gb"] },
-                                    "postcode":    { "_gen": "string", "expr": "#{Address.postcode}",         "locale": ["en", "gb"] }
-                                  }
-                            }
-                        }
-                    },
-                    "update":{                     
-                        "value": {
-                            "vars": {
-                                "firstName": {
-                                    "_gen": "previousEvent",
-                                    "partition": true,
-                                    "path": [ "value", "payload", "after", "firstName" ]
-                                }
-                            },
-                            "op": "u",
-                            "payload": {
-                                "before": { "_gen": "previousEvent", "partition": true, "path": [ "value", "payload", "after" ] },
-                                "after": {
-                                    "_gen": "someKeys",
-                                    "object": {
-                                        "firstName": {
-                                            "_gen": "ai",
-                                            "service": "ollama",
-                                            "system": "Given a name, return one common misspelling. Respond with only the misspelled name.",
-                                            "ollama": {
-                                                "url": "http://host.docker.internal:11434",
-                                                "model": "llama3.1:latest"
-                                            },
-                                            "prompt": { "_gen": "var", "var": "firstName" }
-                                        },                                        
-                                        "lastName": { "_gen": "string", "expr": "#{Name.lastName}" },
-                                        "email": { "_gen": "string", "expr": "#{Internet.emailAddress}" }
-                                      }
-                                }
-                            }
-                        }
-                    },
-                    "delete": {
-                        "value": {
-                            "op": "d",
-                            "payload": {
-                                "before": { "_gen": "previousEvent", "path": [ "value", "payload", "after" ] },
-                                "after": null
-                            }
-                        }
 
-                    }
+{
+  "generators": [
+    {
+      "topic": "people",
+      "vars": {
+        "prevFirstName": {
+          "_gen": "previousEvent",
+          "path": ["value", "payload", "after", "firstName"]
+        },
+        "prevLastName": {
+          "_gen": "previousEvent",
+          "path": ["value", "payload", "after", "lastName"]
+        }
+      },
+      "fork": {
+        "key": { "_gen": "uuid" },
+        "stagger": { "ms": 50 },
+        "maxForks": 5000
+      },
+      "key": {
+        "_gen": "var",
+        "var": "forkKey"
+      },
+      "value": {},
+      "stateMachine": {
+        "_gen": "stateMachine",
+        "initial": "insert",
+        "merge": { "previous": true },
+        "transitions": {
+          "insert": {
+            "_gen": "weightedOneOf",
+            "choices": [
+              { "weight": 10, "value": "update" }
+            ]
+          },
+          "update": {
+            "_gen": "oneOf",
+            "choices": ["update"]
+          },
+          "delete": "insert"
+        },
+        "states": {
+          "insert": {
+            "value": {
+              "op": "c",
+              "payload": {
+                "before": null,
+                "after": {
+                  "id": { "_gen": "var", "var": "forkKey" },
+                  "title": { "_gen": "string", "expr": "#{Name.prefix}", "locale": ["en", "gb"] },
+                  "firstName": { "_gen": "string", "expr": "#{Name.firstName}", "locale": ["en", "gb"] },
+                  "lastName": { "_gen": "string", "expr": "#{Name.lastName}", "locale": ["en", "gb"] },
+                  "email": { "_gen": "string", "expr": "#{Internet.emailAddress}" },
+                  "dob": {
+                    "_gen": "string",
+                    "expr": "#{Date.birthday '18','65'}",
+                    "locale": ["en", "gb"]
+                  },
+                  "phone": {
+                    "_gen": "string",
+                    "expr": "#{PhoneNumber.cellPhone}",
+                    "locale": ["en", "gb"]
+                  },
+                  "address": {
+                    "_gen": "string",
+                    "expr": "#{Address.streetAddress}",
+                    "locale": ["en", "gb"]
+                  },
+                  "city": {
+                    "_gen": "string",
+                    "expr": "#{Address.city}",
+                    "locale": ["en", "gb"]
+                  },
+                  "county": {
+                    "_gen": "string",
+                    "expr": "#{Address.county}",
+                    "locale": ["en", "gb"]
+                  },
+                  "postcode": {
+                    "_gen": "string",
+                    "expr": "#{Address.postcode}",
+                    "locale": ["en", "gb"]
+                  }
                 }
-            },
-            "localConfigs": {
-                "throttleMs": 250
+              }
             }
-        }
-    ],
-    "connections": {
-        "kafka": {
-            "kind": "kafka",
-            "producerConfigs": {
-                "bootstrap.servers": "kafka:19092",
-                "key.serializer": "io.shadowtraffic.kafka.serdes.JsonSerializer",
-                "value.serializer": "io.shadowtraffic.kafka.serdes.JsonSerializer"
+          },
+          "update": {
+            "value": {
+              "op": "u",
+              "payload": {
+                "before": {
+                  "_gen": "previousEvent",
+                  "path": ["value", "payload", "after"]
+                },
+                "after": {
+                  "_gen": "merge",
+                  "objects": [
+                    {
+                      "firstName": {
+                        "_gen": "var",
+                        "var": "prevFirstName"
+                      },
+                      "lastName": {
+                        "_gen": "var",
+                        "var": "prevLastName"
+                      }
+                    },
+                    {
+                      "_gen": "someKeys",
+                      "object": {
+                        "firstName": {
+                          "_gen": "ai",
+                          "input": {
+                            "_gen": "var",
+                            "var": "prevFirstName"
+                          },
+                          "service": "ollama",
+                          "ollama": {
+                            "url": "http://host.docker.internal:11434",
+                            "model": "llama3.1:latest",
+                            "prompt": "These are synthetic names. Take the provided first name and return one playful misspelling as a single token. No quotes, no punctuation, no notes. If unsure, just repeat the name."
+                          }
+                        },
+                        "lastName": {
+                          "_gen": "ai",
+                          "input": {
+                            "_gen": "var",
+                            "var": "prevLastName"
+                          },
+                          "service": "ollama",
+                          "ollama": {
+                            "url": "http://host.docker.internal:11434",
+                            "model": "llama3.1:latest",
+                            "prompt": "These are synthetic names. Take the provided last name and return one playful misspelling as a single token. No quotes, no punctuation, no notes. If unsure, just repeat the name."
+                          }
+                        },
+                        "email": {
+                          "_gen": "string",
+                          "expr": "#{Internet.emailAddress}"
+                        }
+                      }
+                    },
+                    {
+                      "_gen": "oneOf",
+                      "choices": [
+                        {},
+                        {
+                          "address": { "_gen": "string", "expr": "#{Address.streetAddress}", "locale": ["en", "gb"] },
+                          "city":    { "_gen": "string", "expr": "#{Address.city}",          "locale": ["en", "gb"] },
+                          "county":  { "_gen": "string", "expr": "#{Address.county}",        "locale": ["en", "gb"] },
+                          "postcode":{ "_gen": "string", "expr": "#{Address.postcode}",      "locale": ["en", "gb"] }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
             }
+          },
+          "delete": {
+            "value": {
+              "op": "d",
+              "payload": {
+                "before": {
+                  "_gen": "previousEvent",
+                  "path": ["value", "payload", "after"]
+                },
+                "after": null
+              }
+            }
+          }
         }
+      },
+      "localConfigs": {
+        "throttleMs": 100
+      }
     }
+  ],
+  "connections": {
+    "kafka": {
+      "kind": "kafka",
+      "producerConfigs": {
+        "bootstrap.servers": "kafka:19092",
+        "key.serializer": "io.shadowtraffic.kafka.serdes.JsonSerializer",
+        "value.serializer": "io.shadowtraffic.kafka.serdes.JsonSerializer"
+      }
+    }
+  }
 }

@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   kafka:
     image: bitnamilegacy/kafka:4.0.0-debian-12-r10
@@ -34,7 +36,8 @@ services:
   schema-registry:
     image: confluentinc/cp-schema-registry:7.7.1
     container_name: schema-registry
-    depends_on: [kafka]
+    depends_on:
+      - kafka
     ports:
       - "8081:8081"
     environment:
@@ -46,7 +49,9 @@ services:
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: kafka-ui
-    depends_on: [kafka, schema-registry]
+    depends_on:
+      - kafka
+      - schema-registry
     ports:
       - "8080:8080"
     environment:
@@ -60,9 +65,33 @@ services:
     container_name: quine
     depends_on:
       - kafka
+    # Avoid port clash with kafka-ui's 8080
     ports:
-      - "8080:8080"
+      - "8082:8080"
     volumes:
       - ./quine:/quine
     command: ["-r", "/quine/billing-ingest.yaml"]
-  
+  shadowtraffic:
+    image: shadowtraffic/shadowtraffic:latest
+    container_name: shadowtraffic
+    depends_on:
+      - kafka
+    env_file:
+      - ./license.env
+    volumes:
+      - ./generators/customers.json:/home/config.json:ro
+    command:
+      - shadowtraffic
+      - --config
+      - /home/config.json
+      - --with-studio
+      - --watch
+      - --sample
+      - "50"
+    ports:
+      - "9876:8080"
+
+
+volumes:
+  kafka_data:
+
