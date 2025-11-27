@@ -45,18 +45,6 @@ flowchart TD
 
 ## Synthetic Data Generation
 
-The generator at generators/customers.json defines:
-
-Multiple SoRs (CRM, Billing, Claims)
-
-Controlled duplication, nicknames, typos, address changes
-
-Cross-system linkages for realistic entity resolution tests
-
-You can tune the realism by editing the globals section:
-
-"duplicationRate": 0.18,
-"familyPolicyRate": 0.35,
-"diffSurnameInFamilyRate": 0.22
+https://shadowtraffic.io/
 
 
