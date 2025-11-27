@@ -2,7 +2,7 @@
 
 This project demonstrates a **real-time entity resolution pipeline** for a hypothetical enterprise org. 
 
-It combines **Kafka**, **Splink**, **Memgraph**, and **ShadowTraffic** to identify when records from multiple systems of record (SoRs) refer to the same entity.
+It combines **Kafka**, **Splink**, **Quine**, and **ShadowTraffic** to identify when records from multiple systems of record (SoRs) refer to the same entity.
 
 ---
 
