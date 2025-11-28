@@ -330,7 +330,6 @@ def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
 
     cleaned["cityLower"] = lower_str(rec.get("city"))
     cleaned["countyLower"] = lower_str(rec.get("county"))
-    cleaned["policy_id"] = clean_str(rec.get("policy_id") or rec.get("policy"))
 
     # Derived hashes
     cleaned["personNameHash"] = (
@@ -436,9 +435,6 @@ def compound_keys(data: Dict[str, Any]) -> Dict[str, Optional[str]]:
     keys["bk_email_user_surname_lower"] = join(
         data.get("emailUserPartNormalized"), data.get("lastNameLower")
     )
-    keys["bk_email_domain_policy"] = join(
-        data.get("emailDomain"), data.get("policy_id")
-    )
     keys["bk_email_domain_phone_last4"] = join(
         data.get("emailDomain"), data.get("phoneLast4")
     )
@@ -493,9 +489,6 @@ def compound_keys(data: Dict[str, Any]) -> Dict[str, Optional[str]]:
     )
     keys["bk_house_lname_initial_fname_initial"] = join(
         data.get("houseNumber"), data.get("lastNameInitial"), data.get("firstNameInitial")
-    )
-    keys["bk_house_surname_initial_policy"] = join(
-        data.get("houseNumber"), data.get("lastNameInitial"), data.get("policy_id")
     )
     keys["bk_house_fname_initial_street_lower"] = join(
         data.get("houseNumber"), data.get("firstNameInitial"), data.get("streetLower")
