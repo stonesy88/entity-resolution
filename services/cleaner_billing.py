@@ -1,161 +1,258 @@
-# Cleaner needs fixing to match Shadow Traffic changes TBD!
-
-
 #!/usr/bin/env python
+"""Cleaner for billing events.
+
+The cleaner consumes raw billing messages, normalises the payload, enriches it
+with phonetic/name/address tokens, and emits a set of compound keys for entity
+resolution.
+"""
+
 import hashlib
 import json
 import os
 import re
 import sys
-import csv
-from datetime import datetime
-from typing import Any, Dict, Optional
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional, Tuple
 
 from confluent_kafka import Consumer, Producer
 from metaphone import doublemetaphone
 from nameparser import HumanName
 import phonenumbers
-from pydantic import BaseModel
 
-# ---------------------------------------------------------------------------
-# Nickname mapping (from names.csv)
-# ---------------------------------------------------------------------------
-
-NICKNAME_CSV = os.getenv("NICKNAME_CSV", "./services/names.csv")
-
-
-def load_nickname_map(csv_path: str) -> dict[str, str]:
-    nick_to_canon: dict[str, str] = {}
-
-    try:
-        with open(csv_path, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            # Expect headers: name1, relationship, name2
-            required = {"name1", "relationship", "name2"}
-            if not reader.fieldnames or not required.issubset(
-                set(h.lower() for h in reader.fieldnames)
-            ):
-                print(
-                    f"Unexpected headers in {csv_path}: {reader.fieldnames}",
-                    file=sys.stderr,
-                )
-
-            for row in reader:
-                name1 = (row.get("name1") or "").strip().lower()
-                rel = (row.get("relationship") or "").strip().lower()
-                name2 = (row.get("name2") or "").strip().lower()
-
-                if rel != "has_nickname":
-                    continue
-
-                if not name1 or not name2:
-                    continue
-
-                canonical = name1
-                nickname = name2
-
-                # Prefer the longest canonical if collisions
-                if (
-                    nickname not in nick_to_canon
-                    or len(canonical) > len(nick_to_canon[nickname])
-                ):
-                    nick_to_canon[nickname] = canonical
-
-    except FileNotFoundError:
-        print(
-            f"Nickname CSV not found: {csv_path} — starting with empty map",
-            file=sys.stderr,
-        )
-
-    print(f"Loaded {len(nick_to_canon)} nickname mappings from {csv_path}")
-    return nick_to_canon
-
-
-NICK_CANON = load_nickname_map(NICKNAME_CSV)
-
-# ---------------------------------------------------------------------------
-# Kafka config
-# ---------------------------------------------------------------------------
-
-RAW_TOPIC = os.getenv("RAW_TOPIC", "raw.customer")
-ENR_TOPIC = os.getenv("ENR_TOPIC", "enriched.customer")
+RAW_TOPIC = os.getenv("RAW_TOPIC", "customers.raw")
+ENR_TOPIC = os.getenv("ENR_TOPIC", "customers.clean")
 BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
-GROUP_ID = os.getenv("CLEANER_GROUP_ID", "cleaner")
+GROUP_ID = os.getenv("CLEANER_GROUP_ID", "cleaner_billing")
+DEFAULT_REGION = os.getenv("PHONE_REGION", "GB")
+
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
 
 # ---------------------------------------------------------------------------
-# Email, hashing, name, phone, DOB
+# Utility helpers
 # ---------------------------------------------------------------------------
 
-email_re = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+def sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def sha256(s: str) -> str:
-    """Hash for PII IDs."""
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+def clean_str(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned if cleaned else None
 
-def normalise_name(raw: str) -> Dict[str, Any]:
+
+def lower_str(value: Optional[str]) -> Optional[str]:
+    cleaned = clean_str(value)
+    return cleaned.lower() if cleaned else None
+
+
+def initial(value: Optional[str]) -> Optional[str]:
+    cleaned = clean_str(value)
+    return cleaned[0].lower() if cleaned else None
+
+
+def metaphones(value: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    cleaned = clean_str(value)
+    if not cleaned:
+        return None, None
+    primary, secondary = doublemetaphone(cleaned)
+    return primary or None, secondary or None
+
+
+def tokenize(value: Optional[str]) -> List[str]:
+    if not value:
+        return []
+    return [token for token in re.split(r"[^a-z0-9]+", value.lower()) if token]
+
+
+def normalize_email(raw: Optional[str]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    if not raw:
+        return None, None, None
+    lowered = raw.strip().lower()
+    if not EMAIL_RE.match(lowered):
+        return None, None, None
+
+    user_part, _, domain = lowered.partition("@")
+    domain = domain or None
+    user_normalized = user_part
+    if user_normalized:
+        # strip plus-tags and periods for common providers
+        if "+" in user_normalized:
+            user_normalized = user_normalized.split("+", 1)[0]
+        user_normalized = user_normalized.replace(".", "")
+
+    return lowered, domain, user_normalized or None
+
+
+def normalize_phone(raw: Optional[str]) -> Dict[str, Optional[str]]:
     if not raw:
         return {
-            "given_name": None,
-            "family_name": None,
-            "given_name_canonical": None,
-            "surname_phonetic": None,
+            "phoneE164": None,
+            "phoneCountryCode": None,
+            "phoneDigitsOnly": None,
+            "phoneAreaCode": None,
+            "phoneLast4": None,
+            "phoneVerified": False,
         }
 
-    n = HumanName(raw)
-    given = n.first.strip().title() if n.first else None
-    family = n.last.strip().title() if n.last else None
+    try:
+        parsed = phonenumbers.parse(raw, DEFAULT_REGION)
+        if not (phonenumbers.is_possible_number(parsed) and phonenumbers.is_valid_number(parsed)):
+            raise phonenumbers.NumberParseException(0, "Invalid number")
+    except Exception:
+        return {
+            "phoneE164": None,
+            "phoneCountryCode": None,
+            "phoneDigitsOnly": None,
+            "phoneAreaCode": None,
+            "phoneLast4": None,
+            "phoneVerified": False,
+        }
 
-    # Canonical name mapping from CSV to determine if a nickname
-    canonical = given
-    if given:
-        lower = given.lower()
-        if lower in NICK_CANON:
-            canonical = NICK_CANON[lower].title()
-
-    # Phonetic surname (Double Metaphone)
-    surname_phonetic = doublemetaphone(family)[0] if family else None
+    e164 = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+    national_number = phonenumbers.format_number(
+        parsed, phonenumbers.PhoneNumberFormat.NATIONAL
+    )
+    digits_only = re.sub(r"\D", "", national_number)
 
     return {
-        "given_name": given,
-        "family_name": family,
-        "given_name_canonical": canonical,
-        "surname_phonetic": surname_phonetic,
+        "phoneE164": e164,
+        "phoneCountryCode": str(parsed.country_code),
+        "phoneDigitsOnly": digits_only,
+        "phoneAreaCode": digits_only[:3] if len(digits_only) >= 3 else None,
+        "phoneLast4": digits_only[-4:] if len(digits_only) >= 4 else None,
+        "phoneVerified": True,
     }
 
 
-def normalise_phone(raw: str, default_region: str = "GB") -> Optional[str]:
-    if not raw:
-        return None
-    try:
-        num = phonenumbers.parse(raw, default_region)
-        if phonenumbers.is_possible_number(num) and phonenumbers.is_valid_number(num):
-            return phonenumbers.format_number(
-                num, phonenumbers.PhoneNumberFormat.E164
-            )
-    except Exception:
-        return None
-    return None
+def parse_postcode(raw: Optional[str]) -> Dict[str, Optional[str]]:
+    cleaned = clean_str(raw)
+    if not cleaned:
+        return {"postcode": None, "postcodeLower": None, "postcodeSector": None, "postcodeArea": None}
+
+    normalized = re.sub(r"\s+", " ", cleaned.upper())
+    parts = normalized.split(" ")
+    outward = parts[0] if parts else None
+    inward = parts[1] if len(parts) > 1 else ""
+    sector = None
+    if outward and inward:
+        sector = f"{outward} {inward[:1]}"
+    elif outward:
+        sector = outward
+
+    area_match = re.match(r"([A-Z]+)", outward or "")
+    area = area_match.group(1) if area_match else None
+
+    return {
+        "postcode": normalized,
+        "postcodeLower": normalized.lower(),
+        "postcodeSector": sector,
+        "postcodeArea": area,
+    }
 
 
-def normalise_email(raw: str) -> Optional[str]:
-    if not raw:
-        return None
-    e = raw.strip().lower()
-    return e if email_re.match(e) else None
+def parse_address(raw: Optional[str]) -> Dict[str, Optional[str]]:
+    cleaned = clean_str(raw)
+    if not cleaned:
+        return {
+            "houseNumber": None,
+            "streetLower": None,
+            "addressTokens": [],
+        }
+
+    house_number = None
+    street = cleaned
+    match = re.match(r"^(\d+)[\s,]+(.+)$", cleaned)
+    if match:
+        house_number = match.group(1)
+        street = match.group(2)
+
+    street_lower = street.lower()
+
+    return {
+        "houseNumber": house_number,
+        "streetLower": street_lower,
+        "addressTokens": tokenize(cleaned),
+    }
 
 
-def normalise_dob(raw: str) -> Optional[str]:
-    if not raw:
-        return None
-    s = raw.strip()
-    # Assume already ISO, else try simple patterns
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+def parse_dob(raw: Optional[str]) -> Dict[str, Optional[str]]:
+    cleaned = clean_str(raw)
+    if not cleaned:
+        return {
+            "dobDateOnly": None,
+            "dobYearOnly": None,
+            "dobMonthDayOnly": None,
+            "ageBucket": None,
+        }
+
+    normalized_cleaned = cleaned
+    if "." in cleaned:
+        main_part, frac_part = cleaned.split(".", 1)
+        if frac_part and len(frac_part) > 6:
+            normalized_cleaned = f"{main_part}.{frac_part[:6]}"
+    else:
+        normalized_cleaned = cleaned
+
+    dt: Optional[datetime] = None
+    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%d/%m/%Y"):
         try:
-            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+            dt = datetime.strptime(normalized_cleaned, fmt)
+            break
         except ValueError:
             continue
-    return None
+    if dt is None:
+        try:
+            dt = datetime.fromisoformat(normalized_cleaned)
+        except ValueError:
+            return {
+                "dobDateOnly": None,
+                "dobYearOnly": None,
+                "dobMonthDayOnly": None,
+                "ageBucket": None,
+            }
+
+    date_only = dt.date()
+    dob_year = str(date_only.year)
+    dob_month_day = date_only.strftime("%m-%d")
+    age_bucket = compute_age_bucket(date_only)
+
+    return {
+        "dobDateOnly": date_only.isoformat(),
+        "dobYearOnly": dob_year,
+        "dobMonthDayOnly": dob_month_day,
+        "ageBucket": age_bucket,
+    }
+
+
+def compute_age_bucket(dob: date) -> str:
+    today = date.today()
+    age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+    if age < 18:
+        return "0-17"
+    if age < 25:
+        return "18-24"
+    if age < 35:
+        return "25-34"
+    if age < 45:
+        return "35-44"
+    if age < 55:
+        return "45-54"
+    if age < 65:
+        return "55-64"
+    if age < 75:
+        return "65-74"
+    return "75+"
+
+
+def name_tokens(first: Optional[str], last: Optional[str]) -> List[str]:
+    tokens: List[str] = []
+    tokens.extend(tokenize(first or ""))
+    tokens.extend(tokenize(last or ""))
+    return tokens
 
 
 # ---------------------------------------------------------------------------
@@ -164,84 +261,267 @@ def normalise_dob(raw: str) -> Optional[str]:
 
 
 def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
-    out: Dict[str, Any] = {}
+    cleaned: Dict[str, Any] = {}
 
-    # Provenance
-    out["source"] = rec.get("source") or "billing"
-    out["source_system"] = rec.get("source_system") or "billing_portal"
-    out["source_id"] = str(rec.get("source_id") or "").strip() or None
+    # Name parts
+    first_raw = rec.get("firstName")
+    last_raw = rec.get("lastName")
+    maiden_raw = rec.get("maidenName")
+    title_raw = rec.get("title")
 
-    # Event time
-    et = rec.get("event_time")
-    if isinstance(et, (int, float)):
-        out["event_time"] = int(et)
-    else:
-        out["event_time"] = int(datetime.utcnow().timestamp() * 1000)
+    first_lower = lower_str(first_raw)
+    last_lower = lower_str(last_raw)
+    maiden_lower = lower_str(maiden_raw)
 
-    # Name
-    name_parts = normalise_name(
-        f"{rec.get('given_name','')} {rec.get('family_name','')}".strip()
+    first_dm1, first_dm2 = metaphones(first_raw)
+    last_dm1, last_dm2 = metaphones(last_raw)
+    maiden_dm1, maiden_dm2 = metaphones(maiden_raw)
+
+    cleaned.update(
+        {
+            "firstName": clean_str(first_raw),
+            "lastName": clean_str(last_raw),
+            "firstNameLower": first_lower,
+            "firstNameInitial": initial(first_raw),
+            "firstNameMetaphone1": first_dm1,
+            "firstNameMetaphone2": first_dm2,
+            "lastNameLower": last_lower,
+            "lastNameInitial": initial(last_raw),
+            "lastNameMetaphone1": last_dm1,
+            "lastNameMetaphone2": last_dm2,
+            "maidenNameLower": maiden_lower,
+            "maidenNameMetaphone1": maiden_dm1,
+            "maidenNameMetaphone2": maiden_dm2,
+        }
     )
-    out.update(name_parts)
+
+    # Prefix/suffix using HumanName
+    name_obj = HumanName(
+        " ".join(part for part in [title_raw, first_raw, last_raw] if part)
+    )
+    cleaned["namePrefix"] = lower_str(name_obj.title)
+    cleaned["nameSuffix"] = lower_str(name_obj.suffix)
+    cleaned["titleNorm"] = lower_str(title_raw)
+    cleaned["nameTokens"] = name_tokens(first_raw, last_raw)
 
     # DOB
-    out["dob"] = normalise_dob(rec.get("dob") or "")
+    dob_parts = parse_dob(rec.get("dob"))
+    cleaned.update(dob_parts)
 
     # Email
-    out["email"] = normalise_email(rec.get("email") or "")
+    email_lower, email_domain, email_user_norm = normalize_email(rec.get("email"))
+    cleaned.update(
+        {
+            "emailLower": email_lower,
+            "emailDomain": email_domain,
+            "emailUserPartNormalized": email_user_norm,
+        }
+    )
 
     # Phone
-    out["phone_e164"] = normalise_phone(rec.get("phone") or "")
+    phone_parts = normalize_phone(rec.get("phone"))
+    cleaned.update(phone_parts)
 
-    # Address (PAF-ish) + postcode + sector
-    addr_raw = rec.get("address") or rec.get("address_line_1") or ""
-    postcode_raw = rec.get("postcode") or rec.get("postal_code") or ""
-    country_raw = rec.get("country")
+    # Address & postcode
+    address_parts = parse_address(rec.get("address"))
+    cleaned.update(address_parts)
 
-    addr = parse_uk_address_with_ollama(addr_raw, postcode_raw, country_raw)
+    postcode_parts = parse_postcode(rec.get("postcode"))
+    cleaned.update(postcode_parts)
 
-    out["company_name"] = addr.get("company_name")
-    out["department"] = addr.get("department")
-    out["address_line_1"] = addr.get("address_line_1")
-    out["address_line_2"] = addr.get("address_line_2")
-    out["post_town"] = addr.get("post_town")
-    out["postcode"] = addr.get("postal_code")
-    out["postcode_sector"] = addr.get("postcode_sector")
-    out["country"] = addr.get("country")
+    cleaned["cityLower"] = lower_str(rec.get("city"))
+    cleaned["countyLower"] = lower_str(rec.get("county"))
+    cleaned["policy_id"] = clean_str(rec.get("policy_id") or rec.get("policy"))
 
-    # Policy & family
-    policy = str(rec.get("policy_id") or "").upper().replace("-", "").strip()
-    out["policy_id"] = policy or None
-    out["family_id"] = rec.get("family_id") or None
-
-    # National ID hash
-    nid = str(rec.get("national_id") or "").strip()
-    out["national_id_hash"] = sha256(nid) if nid else None
-
-    # Derived keys
-    dob = out.get("dob")
-    surname_phonetic = out.get("surname_phonetic")
-    email = out.get("email")
-    phone_e164 = out.get("phone_e164")
-    policy_id = out.get("policy_id")
-
-    out["bk_nid_dob"] = (
-        f"{out['national_id_hash']}|{dob}"
-        if out.get("national_id_hash") and dob
-        else None
+    # Derived hashes
+    cleaned["personNameHash"] = (
+        sha256(f"{first_lower}|{last_lower}") if first_lower or last_lower else None
     )
-    out["bk_email_dob"] = f"{email}|{dob}" if email and dob else None
-    out["bk_phone_sndx"] = (
-        f"{phone_e164}|{surname_phonetic}" if phone_e164 and surname_phonetic else None
-    )
-    out["bk_policy_dob"] = f"{policy_id}|{dob}" if policy_id and dob else None
-    out["bk_nameYdob"] = (
-        f"{surname_phonetic[:1]}|{dob[:4]}"
-        if surname_phonetic and dob
+    cleaned["personAddressHash"] = (
+        sha256(
+            "|".join(
+                filter(
+                    None,
+                    [
+                        address_parts.get("houseNumber"),
+                        address_parts.get("streetLower"),
+                        postcode_parts.get("postcodeLower"),
+                    ],
+                )
+            )
+        )
+        if address_parts.get("houseNumber") or address_parts.get("streetLower") or postcode_parts.get("postcodeLower")
         else None
     )
 
-    return out
+    # Compound keys
+    cleaned.update(compound_keys(cleaned))
+
+    # Include original identifiers
+    cleaned["id"] = clean_str(rec.get("id"))
+
+    return cleaned
+
+
+# ---------------------------------------------------------------------------
+# Compound keys
+# ---------------------------------------------------------------------------
+
+
+def compound_keys(data: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    def join(*parts: Optional[str]) -> Optional[str]:
+        if any(part is None for part in parts):
+            return None
+        return "|".join(str(part) for part in parts)
+
+    keys: Dict[str, Optional[str]] = {}
+
+    keys["bk_lname_dob"] = join(data.get("lastNameLower"), data.get("dobDateOnly"))
+    keys["bk_lname_init_dobY"] = join(data.get("lastNameInitial"), data.get("dobYearOnly"))
+    keys["bk_lname_dm_dobY"] = join(data.get("lastNameMetaphone1"), data.get("dobYearOnly"))
+    keys["bk_fname_init_lname"] = join(data.get("firstNameInitial"), data.get("lastNameLower"))
+    keys["bk_fname_lower_lname_lower"] = join(
+        data.get("firstNameLower"), data.get("lastNameLower")
+    )
+    keys["bk_fname_metaphone_lname"] = join(
+        data.get("firstNameMetaphone1"), data.get("lastNameLower")
+    )
+    keys["bk_fname_metaphone1_lname_metaphone1"] = join(
+        data.get("firstNameMetaphone1"), data.get("lastNameMetaphone1")
+    )
+    keys["bk_fname_initial_lname_initial"] = join(
+        data.get("firstNameInitial"), data.get("lastNameInitial")
+    )
+    keys["bk_fname_initial_lname_lower_dobY"] = join(
+        data.get("firstNameInitial"), data.get("lastNameLower"), data.get("dobYearOnly")
+    )
+    keys["bk_person_namehash_dob"] = join(
+        data.get("personNameHash"), data.get("dobDateOnly")
+    )
+    keys["bk_person_namehash_phone_last4"] = join(
+        data.get("personNameHash"), data.get("phoneLast4")
+    )
+    keys["bk_person_namehash_email_domain"] = join(
+        data.get("personNameHash"), data.get("emailDomain")
+    )
+
+    keys["bk_dob_phone"] = join(data.get("dobDateOnly"), data.get("phoneE164"))
+    keys["bk_dob_email"] = join(data.get("dobDateOnly"), data.get("emailLower"))
+    keys["bk_dob_house_postcode"] = join(
+        data.get("dobDateOnly"), data.get("houseNumber"), data.get("postcodeLower")
+    )
+    keys["bk_dobY_lname_metaphone1"] = join(
+        data.get("dobYearOnly"), data.get("lastNameMetaphone1")
+    )
+    keys["bk_dobY_lname_lower"] = join(data.get("dobYearOnly"), data.get("lastNameLower"))
+    keys["bk_dobY_phone_last4"] = join(data.get("dobYearOnly"), data.get("phoneLast4"))
+    keys["bk_ageBucket_lname_initial"] = join(
+        data.get("ageBucket"), data.get("lastNameInitial")
+    )
+    keys["bk_ageBucket_lname_metaphone1"] = join(
+        data.get("ageBucket"), data.get("lastNameMetaphone1")
+    )
+    keys["bk_ageBucket_phone_country"] = join(
+        data.get("ageBucket"), data.get("phoneCountryCode")
+    )
+
+    keys["bk_email_dob"] = keys.get("bk_dob_email")
+    keys["bk_email_domain_surname"] = join(
+        data.get("emailDomain"), data.get("lastNameLower")
+    )
+    keys["bk_email_domain_dobY"] = join(
+        data.get("emailDomain"), data.get("dobYearOnly")
+    )
+    email_user_dm1, _ = metaphones(data.get("emailUserPartNormalized"))
+    keys["bk_email_user_dmY"] = join(email_user_dm1, data.get("dobYearOnly"))
+    keys["bk_email_user_surname_lower"] = join(
+        data.get("emailUserPartNormalized"), data.get("lastNameLower")
+    )
+    keys["bk_email_domain_policy"] = join(
+        data.get("emailDomain"), data.get("policy_id")
+    )
+    keys["bk_email_domain_phone_last4"] = join(
+        data.get("emailDomain"), data.get("phoneLast4")
+    )
+    keys["bk_email_domain_fname_initial"] = join(
+        data.get("emailDomain"), data.get("firstNameInitial")
+    )
+    keys["bk_email_domain_lname_initial_dobY"] = join(
+        data.get("emailDomain"), data.get("lastNameInitial"), data.get("dobYearOnly")
+    )
+    keys["bk_email_domain_lname_metaphone1_dobY"] = join(
+        data.get("emailDomain"), data.get("lastNameMetaphone1"), data.get("dobYearOnly")
+    )
+    keys["bk_email_lower_surname_lower"] = join(
+        data.get("emailLower"), data.get("lastNameLower")
+    )
+
+    keys["bk_phone_dob"] = join(data.get("phoneE164"), data.get("dobDateOnly"))
+    keys["bk_phone_last4_dobY"] = join(data.get("phoneLast4"), data.get("dobYearOnly"))
+    keys["bk_phone_digits_surname_initial"] = join(
+        data.get("phoneDigitsOnly"), data.get("lastNameInitial")
+    )
+    keys["bk_phone_DM_surnameY"] = join(
+        data.get("phoneDigitsOnly"), data.get("lastNameMetaphone1"), data.get("dobYearOnly")
+    )
+    keys["bk_phone_country_surname_initial"] = join(
+        data.get("phoneCountryCode"), data.get("lastNameInitial")
+    )
+    keys["bk_phone_country_surname_metaphone1"] = join(
+        data.get("phoneCountryCode"), data.get("lastNameMetaphone1")
+    )
+    keys["bk_phoneE164_lname_initial"] = join(
+        data.get("phoneE164"), data.get("lastNameInitial")
+    )
+    keys["bk_phoneE164_lname_metaphone1"] = join(
+        data.get("phoneE164"), data.get("lastNameMetaphone1")
+    )
+    keys["bk_phone_last4_email_domain"] = join(
+        data.get("phoneLast4"), data.get("emailDomain")
+    )
+
+    keys["bk_house_postcode"] = join(
+        data.get("houseNumber"), data.get("postcodeLower")
+    )
+    keys["bk_house_surname_initial"] = join(
+        data.get("houseNumber"), data.get("lastNameInitial")
+    )
+    keys["bk_house_surnameDM_dobY"] = join(
+        data.get("houseNumber"), data.get("lastNameMetaphone1"), data.get("dobYearOnly")
+    )
+    keys["bk_house_lname_lower_previous"] = join(
+        data.get("houseNumber"), data.get("maidenNameLower") or data.get("lastNameLower")
+    )
+    keys["bk_house_lname_initial_fname_initial"] = join(
+        data.get("houseNumber"), data.get("lastNameInitial"), data.get("firstNameInitial")
+    )
+    keys["bk_house_surname_initial_policy"] = join(
+        data.get("houseNumber"), data.get("lastNameInitial"), data.get("policy_id")
+    )
+    keys["bk_house_fname_initial_street_lower"] = join(
+        data.get("houseNumber"), data.get("firstNameInitial"), data.get("streetLower")
+    )
+    first_street_token = None
+    street_tokens = data.get("streetLower", "").split()
+    if street_tokens:
+        first_street_token = street_tokens[0]
+    keys["bk_houseNumber_street_firstToken_postcodeSector"] = join(
+        data.get("houseNumber"), first_street_token, data.get("postcodeSector")
+    )
+    keys["bk_postcodeArea_surname_initial_dobY"] = join(
+        data.get("postcodeArea"), data.get("lastNameInitial"), data.get("dobYearOnly")
+    )
+    keys["bk_postcodeSector_surname_initial"] = join(
+        data.get("postcodeSector"), data.get("lastNameInitial")
+    )
+    keys["bk_postcodeSector_dobY_surname_metaphone1"] = join(
+        data.get("postcodeSector"), data.get("dobYearOnly"), data.get("lastNameMetaphone1")
+    )
+    keys["bk_house_postcode_dob"] = join(
+        data.get("houseNumber"), data.get("postcodeLower"), data.get("dobDateOnly")
+    )
+
+    return keys
 
 
 # ---------------------------------------------------------------------------
@@ -262,15 +542,15 @@ def main():
         "compression.type": "lz4",
     }
 
-    c = Consumer(consumer_conf)
-    p = Producer(producer_conf)
+    consumer = Consumer(consumer_conf)
+    producer = Producer(producer_conf)
 
     print(f"[cleaner] Consuming from {RAW_TOPIC}, producing to {ENR_TOPIC}")
-    c.subscribe([RAW_TOPIC])
+    consumer.subscribe([RAW_TOPIC])
 
     try:
         while True:
-            msg = c.poll(1.0)
+            msg = consumer.poll(1.0)
             if msg is None:
                 continue
             if msg.error():
@@ -279,24 +559,23 @@ def main():
 
             try:
                 rec = json.loads(msg.value().decode("utf-8"))
-            except json.JSONDecodeError as e:
-                print("Bad JSON:", e, file=sys.stderr)
+            except json.JSONDecodeError as exc:
+                print("Bad JSON:", exc, file=sys.stderr)
                 continue
 
             cleaned = clean_record(rec)
-
-            p.produce(
+            producer.produce(
                 ENR_TOPIC,
-                key=f"billing:{cleaned.get('source_id','')}".encode("utf-8"),
+                key=f"billing:{cleaned.get('id','')}".encode("utf-8"),
                 value=json.dumps(cleaned).encode("utf-8"),
             )
-            p.poll(0)
+            producer.poll(0)
 
     except KeyboardInterrupt:
         print("Shutting down cleaner...")
     finally:
-        c.close()
-        p.flush(10)
+        consumer.close()
+        producer.flush(10)
 
 
 if __name__ == "__main__":
