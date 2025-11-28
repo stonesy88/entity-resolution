@@ -259,7 +259,6 @@ def name_tokens(first: Optional[str], last: Optional[str]) -> List[str]:
 # Cleaning function
 # ---------------------------------------------------------------------------
 
-
 def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     cleaned: Dict[str, Any] = {}
 
