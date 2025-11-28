@@ -83,15 +83,10 @@ BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
 GROUP_ID = os.getenv("CLEANER_GROUP_ID", "cleaner")
 
 # ---------------------------------------------------------------------------
-# Email, hashing, name, phone, DOB
+# Email, hashing, name, phone, DOB, normalisation utils
 # ---------------------------------------------------------------------------
 
 email_re = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-
-def sha256(s: str) -> str:
-    """Hash for PII IDs."""
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 def normalise_name(raw: str) -> Dict[str, Any]:
     if not raw:
@@ -122,7 +117,6 @@ def normalise_name(raw: str) -> Dict[str, Any]:
         "given_name_canonical": canonical,
         "surname_phonetic": surname_phonetic,
     }
-
 
 def normalise_phone(raw: str, default_region: str = "GB") -> Optional[str]:
     if not raw:
@@ -162,7 +156,6 @@ def normalise_dob(raw: str) -> Optional[str]:
 # Cleaning function
 # ---------------------------------------------------------------------------
 
-
 def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
 
@@ -192,31 +185,6 @@ def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
 
     # Phone
     out["phone_e164"] = normalise_phone(rec.get("phone") or "")
-
-    # Address (PAF-ish) + postcode + sector
-    addr_raw = rec.get("address") or rec.get("address_line_1") or ""
-    postcode_raw = rec.get("postcode") or rec.get("postal_code") or ""
-    country_raw = rec.get("country")
-
-    addr = parse_uk_address_with_ollama(addr_raw, postcode_raw, country_raw)
-
-    out["company_name"] = addr.get("company_name")
-    out["department"] = addr.get("department")
-    out["address_line_1"] = addr.get("address_line_1")
-    out["address_line_2"] = addr.get("address_line_2")
-    out["post_town"] = addr.get("post_town")
-    out["postcode"] = addr.get("postal_code")
-    out["postcode_sector"] = addr.get("postcode_sector")
-    out["country"] = addr.get("country")
-
-    # Policy & family
-    policy = str(rec.get("policy_id") or "").upper().replace("-", "").strip()
-    out["policy_id"] = policy or None
-    out["family_id"] = rec.get("family_id") or None
-
-    # National ID hash
-    nid = str(rec.get("national_id") or "").strip()
-    out["national_id_hash"] = sha256(nid) if nid else None
 
     # Derived keys
     dob = out.get("dob")
