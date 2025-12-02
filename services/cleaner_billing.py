@@ -20,7 +20,7 @@ from nameparser import HumanName
 import phonenumbers
 
 RAW_TOPIC = os.getenv("RAW_TOPIC", "customers.raw")
-ENR_TOPIC = os.getenv("ENR_TOPIC", "customers.clean")
+ENR_TOPIC = os.getenv("ENR_TOPIC", "customers.enriched")
 BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
 GROUP_ID = os.getenv("CLEANER_GROUP_ID", "cleaner_billing")
 DEFAULT_REGION = os.getenv("PHONE_REGION", "GB")
@@ -95,7 +95,6 @@ def normalize_phone(raw: Optional[str]) -> Dict[str, Optional[str]]:
             "phoneDigitsOnly": None,
             "phoneAreaCode": None,
             "phoneLast4": None,
-            "phoneVerified": False,
         }
 
     try:
@@ -108,8 +107,7 @@ def normalize_phone(raw: Optional[str]) -> Dict[str, Optional[str]]:
             "phoneCountryCode": None,
             "phoneDigitsOnly": None,
             "phoneAreaCode": None,
-            "phoneLast4": None,
-            "phoneVerified": False,
+            "phoneLast4": None
         }
 
     e164 = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
@@ -123,8 +121,7 @@ def normalize_phone(raw: Optional[str]) -> Dict[str, Optional[str]]:
         "phoneCountryCode": str(parsed.country_code),
         "phoneDigitsOnly": digits_only,
         "phoneAreaCode": digits_only[:3] if len(digits_only) >= 3 else None,
-        "phoneLast4": digits_only[-4:] if len(digits_only) >= 4 else None,
-        "phoneVerified": True,
+        "phoneLast4": digits_only[-4:] if len(digits_only) >= 4 else None
     }
 
 
@@ -255,6 +252,42 @@ def name_tokens(first: Optional[str], last: Optional[str]) -> List[str]:
     return tokens
 
 
+def unwrap_payload(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extract the business payload from Debezium-style envelopes."""
+    if not isinstance(rec, dict):
+        return None
+
+    # Some producers wrap the envelope inside {"value": {...}}
+    if isinstance(rec.get("value"), dict):
+        rec = rec["value"]
+
+    # Support envelopes where payload is nested or top-level
+    env = rec.get("payload") if isinstance(rec.get("payload"), dict) else rec
+
+    op = env.get("op")
+    after = env.get("after")
+    before = env.get("before")
+
+    if op:
+        op = str(op).lower()
+        if op in ("c", "u") and isinstance(after, dict):
+            return after
+        if op == "d" and isinstance(before, dict):
+            return before
+
+    # Fallbacks when op is missing
+    if isinstance(after, dict):
+        return after
+    if isinstance(before, dict):
+        return before
+
+    # Already looks like the business payload
+    if any(key in env for key in ("firstName", "lastName", "email", "id")):
+        return env
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Cleaning function
 # ---------------------------------------------------------------------------
@@ -265,16 +298,13 @@ def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     # Name parts
     first_raw = rec.get("firstName")
     last_raw = rec.get("lastName")
-    maiden_raw = rec.get("maidenName")
     title_raw = rec.get("title")
 
     first_lower = lower_str(first_raw)
     last_lower = lower_str(last_raw)
-    maiden_lower = lower_str(maiden_raw)
 
     first_dm1, first_dm2 = metaphones(first_raw)
     last_dm1, last_dm2 = metaphones(last_raw)
-    maiden_dm1, maiden_dm2 = metaphones(maiden_raw)
 
     cleaned.update(
         {
@@ -288,9 +318,6 @@ def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
             "lastNameInitial": initial(last_raw),
             "lastNameMetaphone1": last_dm1,
             "lastNameMetaphone2": last_dm2,
-            "maidenNameLower": maiden_lower,
-            "maidenNameMetaphone1": maiden_dm1,
-            "maidenNameMetaphone2": maiden_dm2,
         }
     )
 
@@ -356,7 +383,8 @@ def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     cleaned.update(compound_keys(cleaned))
 
     # Include original identifiers
-    cleaned["id"] = clean_str(rec.get("id"))
+    cleaned["custsourceid"] = clean_str(rec.get("id"))
+    cleaned["eventid"] = rec.get("eventid")
 
     return cleaned
 
@@ -374,6 +402,15 @@ def compound_keys(data: Dict[str, Any]) -> Dict[str, Optional[str]]:
 
     keys: Dict[str, Optional[str]] = {}
 
+    keys["bk_deterministic_res"] = join(
+        data.get("firstNameLower"),
+        data.get("lastNameLower"),
+        data.get("dobDateOnly"),
+        data.get("phoneE164"),
+        data.get("streetLower"),
+        data.get("postcodeLower"),
+        data.get("emailLower")
+    )
     keys["bk_lname_dob"] = join(data.get("lastNameLower"), data.get("dobDateOnly"))
     keys["bk_lname_init_dobY"] = join(data.get("lastNameInitial"), data.get("dobYearOnly"))
     keys["bk_lname_dm_dobY"] = join(data.get("lastNameMetaphone1"), data.get("dobYearOnly"))
@@ -484,9 +521,6 @@ def compound_keys(data: Dict[str, Any]) -> Dict[str, Optional[str]]:
     keys["bk_house_surnameDM_dobY"] = join(
         data.get("houseNumber"), data.get("lastNameMetaphone1"), data.get("dobYearOnly")
     )
-    keys["bk_house_lname_lower_previous"] = join(
-        data.get("houseNumber"), data.get("maidenNameLower") or data.get("lastNameLower")
-    )
     keys["bk_house_lname_initial_fname_initial"] = join(
         data.get("houseNumber"), data.get("lastNameInitial"), data.get("firstNameInitial")
     )
@@ -494,7 +528,8 @@ def compound_keys(data: Dict[str, Any]) -> Dict[str, Optional[str]]:
         data.get("houseNumber"), data.get("firstNameInitial"), data.get("streetLower")
     )
     first_street_token = None
-    street_tokens = data.get("streetLower", "").split()
+    street_lower = data.get("streetLower") or ""
+    street_tokens = street_lower.split()
     if street_tokens:
         first_street_token = street_tokens[0]
     keys["bk_houseNumber_street_firstToken_postcodeSector"] = join(
@@ -555,10 +590,27 @@ def main():
                 print("Bad JSON:", exc, file=sys.stderr)
                 continue
 
-            cleaned = clean_record(rec)
+            payload = unwrap_payload(rec)
+            if not isinstance(payload, dict):
+                print("Skipping record without usable payload", file=sys.stderr)
+                continue
+
+            cleaned = clean_record(payload)
+
+            # Derive outbound key from the incoming Kafka key (fallback to cleaned id)
+            raw_key = msg.key()
+            if isinstance(raw_key, (bytes, bytearray)):
+                key_value = raw_key.decode("utf-8", errors="ignore")
+            elif raw_key is None:
+                key_value = cleaned.get("id") or ""
+            else:
+                key_value = str(raw_key)
+
+            if not cleaned.get("id") and key_value:
+                cleaned["id"] = key_value
             producer.produce(
                 ENR_TOPIC,
-                key=f"billing:{cleaned.get('id','')}".encode("utf-8"),
+                key=f"customers:{key_value}".encode("utf-8"),
                 value=json.dumps(cleaned).encode("utf-8"),
             )
             producer.poll(0)

@@ -1,21 +1,34 @@
-
 {
   "generators": [
     {
-      "topic": "people",
+      "topic": "customers.raw",
       "vars": {
         "prevFirstName": {
           "_gen": "previousEvent",
-          "path": ["value", "payload", "after", "firstName"]
+          "path": [
+            "value",
+            "payload",
+            "after",
+            "firstName"
+          ]
         },
         "prevLastName": {
           "_gen": "previousEvent",
-          "path": ["value", "payload", "after", "lastName"]
+          "path": [
+            "value",
+            "payload",
+            "after",
+            "lastName"
+          ]
         }
       },
       "fork": {
-        "key": { "_gen": "uuid" },
-        "stagger": { "ms": 50 },
+        "key": {
+          "_gen": "uuid"
+        },
+        "stagger": {
+          "ms": 50
+        },
         "maxForks": 5000
       },
       "key": {
@@ -26,17 +39,24 @@
       "stateMachine": {
         "_gen": "stateMachine",
         "initial": "insert",
-        "merge": { "previous": true },
+        "merge": {
+          "previous": true
+        },
         "transitions": {
           "insert": {
             "_gen": "weightedOneOf",
             "choices": [
-              { "weight": 10, "value": "update" }
+              {
+                "weight": 10,
+                "value": "update"
+              }
             ]
           },
           "update": {
             "_gen": "oneOf",
-            "choices": ["update"]
+            "choices": [
+              "update"
+            ]
           },
           "delete": "insert"
         },
@@ -47,40 +67,88 @@
               "payload": {
                 "before": null,
                 "after": {
-                  "id": { "_gen": "var", "var": "forkKey" },
-                  "title": { "_gen": "string", "expr": "#{Name.prefix}", "locale": ["en", "gb"] },
-                  "firstName": { "_gen": "string", "expr": "#{Name.firstName}", "locale": ["en", "gb"] },
-                  "lastName": { "_gen": "string", "expr": "#{Name.lastName}", "locale": ["en", "gb"] },
-                  "email": { "_gen": "string", "expr": "#{Internet.emailAddress}" },
+                  "id": {
+                    "_gen": "var",
+                    "var": "forkKey"
+                  },
+                  "eventid": {
+                    "_gen": "uuid"
+                  },
+                  "title": {
+                    "_gen": "string",
+                    "expr": "#{Name.prefix}",
+                    "locale": [
+                      "en",
+                      "gb"
+                    ]
+                  },
+                  "firstName": {
+                    "_gen": "string",
+                    "expr": "#{Name.firstName}",
+                    "locale": [
+                      "en",
+                      "gb"
+                    ]
+                  },
+                  "lastName": {
+                    "_gen": "string",
+                    "expr": "#{Name.lastName}",
+                    "locale": [
+                      "en",
+                      "gb"
+                    ]
+                  },
+                  "email": {
+                    "_gen": "string",
+                    "expr": "#{Internet.emailAddress}"
+                  },
                   "dob": {
                     "_gen": "string",
                     "expr": "#{Date.birthday '18','65'}",
-                    "locale": ["en", "gb"]
+                    "locale": [
+                      "en",
+                      "gb"
+                    ]
                   },
                   "phone": {
                     "_gen": "string",
                     "expr": "#{PhoneNumber.cellPhone}",
-                    "locale": ["en", "gb"]
+                    "locale": [
+                      "en",
+                      "gb"
+                    ]
                   },
                   "address": {
                     "_gen": "string",
                     "expr": "#{Address.streetAddress}",
-                    "locale": ["en", "gb"]
+                    "locale": [
+                      "en",
+                      "gb"
+                    ]
                   },
                   "city": {
                     "_gen": "string",
                     "expr": "#{Address.city}",
-                    "locale": ["en", "gb"]
+                    "locale": [
+                      "en",
+                      "gb"
+                    ]
                   },
                   "county": {
                     "_gen": "string",
                     "expr": "#{Address.county}",
-                    "locale": ["en", "gb"]
+                    "locale": [
+                      "en",
+                      "gb"
+                    ]
                   },
                   "postcode": {
                     "_gen": "string",
                     "expr": "#{Address.postcode}",
-                    "locale": ["en", "gb"]
+                    "locale": [
+                      "en",
+                      "gb"
+                    ]
                   }
                 }
               }
@@ -92,11 +160,20 @@
               "payload": {
                 "before": {
                   "_gen": "previousEvent",
-                  "path": ["value", "payload", "after"]
+                  "path": [
+                    "value",
+                    "payload",
+                    "after"
+                  ]
                 },
                 "after": {
                   "_gen": "merge",
                   "objects": [
+                    {
+                      "eventid": {
+                        "_gen": "uuid"
+                      }
+                    },
                     {
                       "firstName": {
                         "_gen": "var",
@@ -147,10 +224,38 @@
                       "choices": [
                         {},
                         {
-                          "address": { "_gen": "string", "expr": "#{Address.streetAddress}", "locale": ["en", "gb"] },
-                          "city":    { "_gen": "string", "expr": "#{Address.city}",          "locale": ["en", "gb"] },
-                          "county":  { "_gen": "string", "expr": "#{Address.county}",        "locale": ["en", "gb"] },
-                          "postcode":{ "_gen": "string", "expr": "#{Address.postcode}",      "locale": ["en", "gb"] }
+                          "address": {
+                            "_gen": "string",
+                            "expr": "#{Address.streetAddress}",
+                            "locale": [
+                              "en",
+                              "gb"
+                            ]
+                          },
+                          "city": {
+                            "_gen": "string",
+                            "expr": "#{Address.city}",
+                            "locale": [
+                              "en",
+                              "gb"
+                            ]
+                          },
+                          "county": {
+                            "_gen": "string",
+                            "expr": "#{Address.county}",
+                            "locale": [
+                              "en",
+                              "gb"
+                            ]
+                          },
+                          "postcode": {
+                            "_gen": "string",
+                            "expr": "#{Address.postcode}",
+                            "locale": [
+                              "en",
+                              "gb"
+                            ]
+                          }
                         }
                       ]
                     }
@@ -165,7 +270,11 @@
               "payload": {
                 "before": {
                   "_gen": "previousEvent",
-                  "path": ["value", "payload", "after"]
+                  "path": [
+                    "value",
+                    "payload",
+                    "after"
+                  ]
                 },
                 "after": null
               }

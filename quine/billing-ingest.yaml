@@ -1,90 +1,221 @@
 version: 1
-title: Enriched Customer Kafka Ingest
+title: Customers Entity Resolution from Kafka
 contributor: you
-summary: Ingest enriched billing customers from Kafka into Quine
+summary: Resolve Kafka customer events into Record and Customer entity nodes
 description: >
-  Reads JSON events from the 'enriched.customer.billing' topic and
-  upserts CustomerEvent and MasterCustomer nodes in the graph, using
-  deterministic rules on national_id_hash + DOB, or name + DOB, or
-  name + address to link events to master records.
+  Each Kafka event becomes a unique Record node. Customers are uniquely
+  identified by the bk_deterministic_res composite key (as an internal Quine
+  node id via idFrom). A Customer is automatically created if not found.
+  Kafka id/custsourceid is stored only as a property. Address parts are modeled
+  as nodes linked from the resolved Customer.
 
 ingestStreams:
   - type: KafkaIngest
+    bootstrapServers: kafka:19092
     topics:
-      - enriched.customer.billing
-    bootstrapServers: kafka:19092   # or localhost:9092 if Quine runs on host
+      - customers.enriched
     format:
       type: CypherJson
-      query: |-
-        // $that is the cleaned JSON from Kafka
-        WITH $that AS ev
+      query: >-
+        WITH $that AS event
+        MATCH
+          (record),
+          (customer),
+          (houseNumber),
+          (street),
+          (city),
+          (county),
+          (postcode),
+          (postcodeSector),
+          (postcodeArea)
+        WHERE id(record) = idFrom(event.eventid)
+          AND id(customer) = idFrom("customer", event.bk_deterministic_res)
+          AND id(houseNumber) = idFrom("houseNumber", CASE WHEN event.houseNumber IS NULL THEN -1 ELSE event.houseNumber END)
+          AND id(street) = idFrom("street", CASE WHEN event.streetLower IS NULL THEN -1 ELSE event.streetLower END)
+          AND id(city) = idFrom("city", CASE WHEN event.cityLower IS NULL THEN -1 ELSE event.cityLower END)
+          AND id(county) = idFrom("county", CASE WHEN event.countyLower IS NULL THEN -1 ELSE event.countyLower END)
+          AND id(postcode) = idFrom("postcode", CASE WHEN event.postcodeLower IS NULL THEN -1 ELSE event.postcodeLower END)
+          AND id(postcodeSector) = idFrom("postcodeSector", CASE WHEN event.postcodeSector IS NULL THEN -1 ELSE event.postcodeSector END)
+          AND id(postcodeArea) = idFrom("postcodeArea", CASE WHEN event.postcodeArea IS NULL THEN -1 ELSE event.postcodeArea END)
 
-        // 1) Upsert the event as a unique :CustomerEvent (per source_id + event_time)
-        MATCH (e)
-        WHERE id(e) = idFrom('event', ev.source, ev.source_id, ev.event_time)
-        SET e += ev
-        SET e:CustomerEvent
+        FOREACH (p IN CASE WHEN event.houseNumber IS NULL THEN [] ELSE [event.houseNumber] END |
+          SET houseNumber.houseNumber = p
+          CREATE (customer)-[:HAS_HOUSE_NUMBER]->(houseNumber)
+        )
 
-        // 2) Derive an address_key from address_line_1 + postcode_sector
-        WITH e, ev,
-             toLower(coalesce(ev.address_line_1, '')) AS addr1,
-             coalesce(ev.postcode_sector, '')         AS pc_sec
-        WITH e, ev,
-             CASE
-               WHEN addr1 <> '' AND pc_sec <> ''
-                 THEN addr1 + '|' + pc_sec
-               ELSE null
-             END AS address_key
+        FOREACH (p IN CASE WHEN event.streetLower IS NULL THEN [] ELSE [event.streetLower] END |
+          SET street.streetLower = p
+          CREATE (customer)-[:HAS_STREET]->(street)
+        )
 
-        // Store address_key on the event node
-        SET e.address_key = address_key
+        FOREACH (p IN CASE WHEN event.cityLower IS NULL THEN [] ELSE [event.cityLower] END |
+          SET city.cityLower = p
+          CREATE (customer)-[:IN_CITY]->(city)
+        )
 
-        // Carry variables forward
-        WITH e, ev, address_key
+        FOREACH (p IN CASE WHEN event.countyLower IS NULL THEN [] ELSE [event.countyLower] END |
+          SET county.countyLower = p
+          CREATE (customer)-[:IN_COUNTY]->(county)
+        )
 
-        // 3) Decide master_id based on deterministic rules:
-        //    1) national_id_hash + dob
-        //    2) canonical first + last + dob
-        //    3) canonical first + last + address_key
-        //    4) fallback: unique per event (no deterministic match)
-        WITH e, ev, address_key,
-             CASE
-               WHEN ev.national_id_hash IS NOT NULL
-                AND ev.dob IS NOT NULL
-                 THEN idFrom('master-nid', ev.national_id_hash, ev.dob)
-               WHEN ev.given_name_canonical IS NOT NULL
-                AND ev.family_name IS NOT NULL
-                AND ev.dob IS NOT NULL
-                 THEN idFrom('master-dob', ev.given_name_canonical, ev.family_name, ev.dob)
-               WHEN ev.given_name_canonical IS NOT NULL
-                AND ev.family_name IS NOT NULL
-                AND address_key IS NOT NULL
-                 THEN idFrom('master-addr', ev.given_name_canonical, ev.family_name, address_key)
-               ELSE idFrom('master-src', ev.source, ev.source_id, ev.event_time)
-             END AS master_id
+        FOREACH (p IN CASE WHEN event.postcodeLower IS NULL THEN [] ELSE [event.postcodeLower] END |
+          SET postcode.postcodeLower = p,
+              postcode.postcode = event.postcode
+          CREATE (customer)-[:IN_POSTCODE]->(postcode)
+        )
 
-        // 4) Upsert the MasterCustomer node by id
-        MATCH (m)
-        WHERE id(m) = master_id
-        SET m:MasterCustomer
-        SET m.master_id = master_id
+        FOREACH (p IN CASE WHEN event.postcodeSector IS NULL THEN [] ELSE [event.postcodeSector] END |
+          SET postcodeSector.postcodeSector = p
+          CREATE (customer)-[:IN_POSTCODE_SECTOR]->(postcodeSector)
+        )
 
-        // Prefer to keep existing non-null values where possible
-        SET m.given_name_canonical = coalesce(ev.given_name_canonical, m.given_name_canonical)
-        SET m.family_name          = coalesce(ev.family_name,          m.family_name)
-        SET m.dob                  = coalesce(ev.dob,                  m.dob)
+        FOREACH (p IN CASE WHEN event.postcodeArea IS NULL THEN [] ELSE [event.postcodeArea] END |
+          SET postcodeArea.postcodeArea = p
+          CREATE (customer)-[:IN_POSTCODE_AREA]->(postcodeArea)
+        )
 
-        // address fields from the cleaner
-        SET m.address_line_1       = coalesce(ev.address_line_1,       m.address_line_1)
-        SET m.address_line_2       = coalesce(ev.address_line_2,       m.address_line_2)
-        SET m.post_town            = coalesce(ev.post_town,            m.post_town)
-        SET m.postcode             = coalesce(ev.postcode,             m.postcode)
-        SET m.postcode_sector      = coalesce(ev.postcode_sector,      m.postcode_sector)
-        SET m.country              = coalesce(ev.country,              m.country)
-        SET m.address_key          = coalesce(address_key,             m.address_key)
+        SET
+          record = event,
+          record.eventid = event.eventid,
+          record.custsourceid = event.custsourceid,
+          record.bk_deterministic_res = event.bk_deterministic_res,
+          record:Record,
 
-        SET m.last_seen_at         = timestamp()
-        SET m.source_systems       = coalesce(m.source_systems, []) + ev.source_system
+          customer.custsourceid             = event.custsourceid,
+          customer.firstName                = event.firstName,
+          customer.lastName                 = event.lastName,
+          customer.firstNameLower           = event.firstNameLower,
+          customer.lastNameLower            = event.lastNameLower,
+          customer.firstNameInitial         = event.firstNameInitial,
+          customer.firstNameMetaphone1      = event.firstNameMetaphone1,
+          customer.firstNameMetaphone2      = event.firstNameMetaphone2,
+          customer.lastNameInitial          = event.lastNameInitial,
+          customer.lastNameMetaphone1       = event.lastNameMetaphone1,
+          customer.lastNameMetaphone2       = event.lastNameMetaphone2,
+          customer.namePrefix               = event.namePrefix,
+          customer.nameSuffix               = event.nameSuffix,
+          customer.titleNorm                = event.titleNorm,
+          customer.nameTokens               = event.nameTokens,
+          customer.dobDateOnly              = event.dobDateOnly,
+          customer.dobYearOnly              = event.dobYearOnly,
+          customer.dobMonthDayOnly          = event.dobMonthDayOnly,
+          customer.ageBucket                = event.ageBucket,
+          customer.emailLower               = event.emailLower,
+          customer.emailDomain              = event.emailDomain,
+          customer.emailUserPartNormalized  = event.emailUserPartNormalized,
+          customer.phoneE164                = event.phoneE164,
+          customer.phoneCountryCode         = event.phoneCountryCode,
+          customer.phoneDigitsOnly          = event.phoneDigitsOnly,
+          customer.phoneAreaCode            = event.phoneAreaCode,
+          customer.phoneLast4               = event.phoneLast4,
+          customer.personNameHash           = event.personNameHash,
+          customer.personAddressHash        = event.personAddressHash,
+          customer.bk_deterministic_res     = event.bk_deterministic_res,
+          customer:Customer
 
-        // 5) Connect the event to its master
-        MERGE (e)-[:INSTANCE_OF]->(m)
+        CREATE (record)-[:record_for_entity]->(customer)
+
+standingQueries: []
+
+nodeAppearances:
+  - predicate:
+      propertyKeys:
+        - eventid
+      knownValues: {}
+    label:
+      prefix: "record: "
+      key: eventid
+      type: Property
+    icon: "📝"
+
+  - predicate:
+      propertyKeys:
+        - bk_deterministic_res
+      knownValues: {}
+    label:
+      prefix: "customer: "
+      key: bk_deterministic_res
+      type: Property
+    icon: "🧑"
+
+  - predicate:
+      propertyKeys:
+        - cityLower
+      knownValues: {}
+    label:
+      prefix: "city: "
+      key: cityLower
+      type: Property
+    icon: "🌃"
+
+  - predicate:
+      propertyKeys:
+        - countyLower
+      knownValues: {}
+    label:
+      prefix: "county: "
+      key: countyLower
+      type: Property
+    icon: "📍"
+
+  - predicate:
+      propertyKeys:
+        - streetLower
+      knownValues: {}
+    label:
+      prefix: "street: "
+      key: streetLower
+      type: Property
+    icon: "🛣️"
+
+  - predicate:
+      propertyKeys:
+        - postcodeLower
+      knownValues: {}
+    label:
+      prefix: "postcode: "
+      key: postcodeLower
+      type: Property
+    icon: "✉️"
+
+  - predicate:
+      propertyKeys:
+        - houseNumber
+      knownValues: {}
+    label:
+      prefix: "house number: "
+      key: houseNumber
+      type: Property
+    icon: "🏠"
+
+  - predicate:
+      propertyKeys:
+        - emailDomain
+      knownValues: {}
+    label:
+      prefix: "email: "
+      key: emailDomain
+      type: Property
+    icon: "📧"
+
+  - predicate:
+      propertyKeys:
+        - phoneCountryCode
+      knownValues: {}
+    label:
+      prefix: "phone country: "
+      key: phoneCountryCode
+      type: Property
+    icon: "📞"
+
+  - predicate:
+      propertyKeys:
+        - Customer
+      knownValues: {}
+    label:
+      value: "Canonical Customer"
+      type: Constant
+    icon: "⭐"
+
+quickQueries: []
+sampleQueries: []
