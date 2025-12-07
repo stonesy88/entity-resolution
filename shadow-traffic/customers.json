@@ -27,7 +27,7 @@
           "_gen": "uuid"
         },
         "stagger": {
-          "ms": 50
+          "ms": 25
         },
         "maxForks": 5000
       },
@@ -283,7 +283,13 @@
         }
       },
       "localConfigs": {
-        "throttleMs": 100
+        "throttleMs": {
+          "_gen": "uniformDistribution",
+          "bounds": [
+            50,
+            100
+          ]
+        }
       }
     }
   ],

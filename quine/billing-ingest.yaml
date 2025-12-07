@@ -27,9 +27,14 @@ ingestStreams:
           (county),
           (postcode),
           (postcodeSector),
-          (postcodeArea)
+          (postcodeArea),
+          (bk_lname_dob),
+          (bk_person_namehash_dob),
+          (bk_dob_phone),
+          (bk_dob_email),
+          (bk_house_postcode_dob)
         WHERE id(record) = idFrom(event.eventid)
-          AND id(customer) = idFrom("customer", event.bk_deterministic_res)
+          AND id(customer) = idFrom("customer", CASE WHEN event.bk_deterministic_res IS NULL THEN -1 ELSE event.bk_deterministic_res END)
           AND id(houseNumber) = idFrom("houseNumber", CASE WHEN event.houseNumber IS NULL THEN -1 ELSE event.houseNumber END)
           AND id(street) = idFrom("street", CASE WHEN event.streetLower IS NULL THEN -1 ELSE event.streetLower END)
           AND id(city) = idFrom("city", CASE WHEN event.cityLower IS NULL THEN -1 ELSE event.cityLower END)
@@ -37,6 +42,11 @@ ingestStreams:
           AND id(postcode) = idFrom("postcode", CASE WHEN event.postcodeLower IS NULL THEN -1 ELSE event.postcodeLower END)
           AND id(postcodeSector) = idFrom("postcodeSector", CASE WHEN event.postcodeSector IS NULL THEN -1 ELSE event.postcodeSector END)
           AND id(postcodeArea) = idFrom("postcodeArea", CASE WHEN event.postcodeArea IS NULL THEN -1 ELSE event.postcodeArea END)
+          AND id(bk_lname_dob) = idFrom("BlockingKey", CASE WHEN event.bk_lname_dob IS NULL THEN -1 ELSE event.bk_lname_dob END)
+          AND id(bk_person_namehash_dob) = idFrom("BlockingKey", CASE WHEN event.bk_person_namehash_dob IS NULL THEN -1 ELSE event.bk_person_namehash_dob END)
+          AND id(bk_dob_phone) = idFrom("BlockingKey", CASE WHEN event.bk_dob_phone IS NULL THEN -1 ELSE event.bk_dob_phone END)
+          AND id(bk_dob_email) = idFrom("BlockingKey", CASE WHEN event.bk_dob_email IS NULL THEN -1 ELSE event.bk_dob_email END)
+          AND id(bk_house_postcode_dob) = idFrom("BlockingKey", CASE WHEN event.bk_house_postcode_dob IS NULL THEN -1 ELSE event.bk_house_postcode_dob END)
 
         FOREACH (p IN CASE WHEN event.houseNumber IS NULL THEN [] ELSE [event.houseNumber] END |
           SET houseNumber.houseNumber = p
@@ -72,6 +82,31 @@ ingestStreams:
         FOREACH (p IN CASE WHEN event.postcodeArea IS NULL THEN [] ELSE [event.postcodeArea] END |
           SET postcodeArea.postcodeArea = p
           CREATE (customer)-[:IN_POSTCODE_AREA]->(postcodeArea)
+        )
+
+        FOREACH (p IN CASE WHEN event.bk_lname_dob IS NULL THEN [] ELSE [event.bk_lname_dob] END |
+          SET bk_lname_dob.value = p, bk_lname_dob:BlockingKey
+          CREATE (customer)-[:BLOCKS_ON_LNAME_DOB]->(bk_lname_dob)
+        )
+
+        FOREACH (p IN CASE WHEN event.bk_person_namehash_dob IS NULL THEN [] ELSE [event.bk_person_namehash_dob] END |
+          SET bk_person_namehash_dob.value = p, bk_person_namehash_dob:BlockingKey
+          CREATE (customer)-[:BLOCKS_ON_NAMEHASH_DOB]->(bk_person_namehash_dob)
+        )
+
+        FOREACH (p IN CASE WHEN event.bk_dob_phone IS NULL THEN [] ELSE [event.bk_dob_phone] END |
+          SET bk_dob_phone.value = p, bk_dob_phone:BlockingKey
+          CREATE (customer)-[:BLOCKS_ON_DOB_PHONE]->(bk_dob_phone)
+        )
+
+        FOREACH (p IN CASE WHEN event.bk_dob_email IS NULL THEN [] ELSE [event.bk_dob_email] END |
+          SET bk_dob_email.value = p, bk_dob_email:BlockingKey
+          CREATE (customer)-[:BLOCKS_ON_DOB_EMAIL]->(bk_dob_email)
+        )
+
+        FOREACH (p IN CASE WHEN event.bk_house_postcode_dob IS NULL THEN [] ELSE [event.bk_house_postcode_dob] END |
+          SET bk_house_postcode_dob.value = p, bk_house_postcode_dob:BlockingKey
+          CREATE (customer)-[:BLOCKS_ON_DOB_HOUSE_POSTCODE]->(bk_house_postcode_dob)
         )
 
         SET
@@ -174,6 +209,10 @@ ingestStreams:
 
         CREATE (record)-[:record_for_entity]->(customer)
 
+        
+
+        
+        
 nodeAppearances:
   - predicate:
       propertyKeys:
@@ -204,202 +243,7 @@ nodeAppearances:
       key: cityLower
       type: Property
     icon: "🌃"
-
-  - predicate:
-      propertyKeys:
-        - countyLower
-      knownValues: {}
-    label:
-      prefix: "county: "
-      key: countyLower
-      type: Property
-    icon: "📍"
-
-  - predicate:
-      propertyKeys:
-        - streetLower
-      knownValues: {}
-    label:
-      prefix: "street: "
-      key: streetLower
-      type: Property
-    icon: "🛣️"
-
-  - predicate:
-      propertyKeys:
-        - postcodeLower
-      knownValues: {}
-    label:
-      prefix: "postcode: "
-      key: postcodeLower
-      type: Property
-    icon: "✉️"
-
-  - predicate:
-      propertyKeys:
-        - houseNumber
-      knownValues: {}
-    label:
-      prefix: "house number: "
-      key: houseNumber
-      type: Property
-    icon: "🏠"
-
-  - predicate:
-      propertyKeys:
-        - emailDomain
-      knownValues: {}
-    label:
-      prefix: "email: "
-      key: emailDomain
-      type: Property
-    icon: "📧"
-
-  - predicate:
-      propertyKeys:
-        - phoneCountryCode
-      knownValues: {}
-    label:
-      prefix: "phone country: "
-      key: phoneCountryCode
-      type: Property
-    icon: "📞"
-
-  - predicate:
-      propertyKeys:
-        - Customer
-      knownValues: {}
-    label:
-      value: "Canonical Customer"
-      type: Constant
-          record.custsourceid = event.custsourceid,
-          record.bk_deterministic_res = event.bk_deterministic_res,
-          record:Record,
-
-          customer.custsourceid = event.custsourceid,
-          customer.firstName = event.firstName,
-          customer.lastName = event.lastName,
-          customer.firstNameLower = event.firstNameLower,
-          customer.firstNameInitial = event.firstNameInitial,
-          customer.firstNameMetaphone1 = event.firstNameMetaphone1,
-          customer.firstNameMetaphone2 = event.firstNameMetaphone2,
-          customer.lastNameLower = event.lastNameLower,
-          customer.lastNameInitial = event.lastNameInitial,
-          customer.lastNameMetaphone1 = event.lastNameMetaphone1,
-          customer.lastNameMetaphone2 = event.lastNameMetaphone2,
-          customer.namePrefix = event.namePrefix,
-          customer.nameSuffix = event.nameSuffix,
-          customer.titleNorm = event.titleNorm,
-          customer.nameTokens = event.nameTokens,
-          customer.dobDateOnly = event.dobDateOnly,
-          customer.dobYearOnly = event.dobYearOnly,
-          customer.dobMonthDayOnly = event.dobMonthDayOnly,
-          customer.ageBucket = event.ageBucket,
-          customer.emailLower = event.emailLower,
-          customer.emailDomain = event.emailDomain,
-          customer.emailUserPartNormalized = event.emailUserPartNormalized,
-          customer.phoneE164 = event.phoneE164,
-          customer.phoneCountryCode = event.phoneCountryCode,
-          customer.phoneDigitsOnly = event.phoneDigitsOnly,
-          customer.phoneAreaCode = event.phoneAreaCode,
-          customer.phoneLast4 = event.phoneLast4,
-          customer.houseNumber = event.houseNumber,
-          customer.streetLower = event.streetLower,
-          customer.addressTokens = event.addressTokens,
-          customer.postcode = event.postcode,
-          customer.postcodeLower = event.postcodeLower,
-          customer.postcodeSector = event.postcodeSector,
-          customer.postcodeArea = event.postcodeArea,
-          customer.cityLower = event.cityLower,
-          customer.countyLower = event.countyLower,
-          customer.personNameHash = event.personNameHash,
-          customer.personAddressHash = event.personAddressHash,
-          customer.bk_deterministic_res = event.bk_deterministic_res,
-          customer.bk_lname_dob = event.bk_lname_dob,
-          customer.bk_lname_init_dobY = event.bk_lname_init_dobY,
-          customer.bk_lname_dm_dobY = event.bk_lname_dm_dobY,
-          customer.bk_fname_init_lname = event.bk_fname_init_lname,
-          customer.bk_fname_lower_lname_lower = event.bk_fname_lower_lname_lower,
-          customer.bk_fname_metaphone_lname = event.bk_fname_metaphone_lname,
-          customer.bk_fname_metaphone1_lname_metaphone1 = event.bk_fname_metaphone1_lname_metaphone1,
-          customer.bk_fname_initial_lname_initial = event.bk_fname_initial_lname_initial,
-          customer.bk_fname_initial_lname_lower_dobY = event.bk_fname_initial_lname_lower_dobY,
-          customer.bk_person_namehash_dob = event.bk_person_namehash_dob,
-          customer.bk_person_namehash_phone_last4 = event.bk_person_namehash_phone_last4,
-          customer.bk_person_namehash_email_domain = event.bk_person_namehash_email_domain,
-          customer.bk_dob_phone = event.bk_dob_phone,
-          customer.bk_dob_email = event.bk_dob_email,
-          customer.bk_dob_house_postcode = event.bk_dob_house_postcode,
-          customer.bk_dobY_lname_metaphone1 = event.bk_dobY_lname_metaphone1,
-          customer.bk_dobY_lname_lower = event.bk_dobY_lname_lower,
-          customer.bk_dobY_phone_last4 = event.bk_dobY_phone_last4,
-          customer.bk_ageBucket_lname_initial = event.bk_ageBucket_lname_initial,
-          customer.bk_ageBucket_lname_metaphone1 = event.bk_ageBucket_lname_metaphone1,
-          customer.bk_ageBucket_phone_country = event.bk_ageBucket_phone_country,
-          customer.bk_email_dob = event.bk_email_dob,
-          customer.bk_email_domain_surname = event.bk_email_domain_surname,
-          customer.bk_email_domain_dobY = event.bk_email_domain_dobY,
-          customer.bk_email_user_dmY = event.bk_email_user_dmY,
-          customer.bk_email_user_surname_lower = event.bk_email_user_surname_lower,
-          customer.bk_email_domain_phone_last4 = event.bk_email_domain_phone_last4,
-          customer.bk_email_domain_fname_initial = event.bk_email_domain_fname_initial,
-          customer.bk_email_domain_lname_initial_dobY = event.bk_email_domain_lname_initial_dobY,
-          customer.bk_email_domain_lname_metaphone1_dobY = event.bk_email_domain_lname_metaphone1_dobY,
-          customer.bk_email_lower_surname_lower = event.bk_email_lower_surname_lower,
-          customer.bk_phone_dob = event.bk_phone_dob,
-          customer.bk_phone_last4_dobY = event.bk_phone_last4_dobY,
-          customer.bk_phone_digits_surname_initial = event.bk_phone_digits_surname_initial,
-          customer.bk_phone_DM_surnameY = event.bk_phone_DM_surnameY,
-          customer.bk_phone_country_surname_initial = event.bk_phone_country_surname_initial,
-          customer.bk_phone_country_surname_metaphone1 = event.bk_phone_country_surname_metaphone1,
-          customer.bk_phoneE164_lname_initial = event.bk_phoneE164_lname_initial,
-          customer.bk_phoneE164_lname_metaphone1 = event.bk_phoneE164_lname_metaphone1,
-          customer.bk_phone_last4_email_domain = event.bk_phone_last4_email_domain,
-          customer.bk_house_postcode = event.bk_house_postcode,
-          customer.bk_house_surname_initial = event.bk_house_surname_initial,
-          customer.bk_house_surnameDM_dobY = event.bk_house_surnameDM_dobY,
-          customer.bk_house_lname_initial_fname_initial = event.bk_house_lname_initial_fname_initial,
-          customer.bk_house_fname_initial_street_lower = event.bk_house_fname_initial_street_lower,
-          customer.bk_houseNumber_street_firstToken_postcodeSector = event.bk_houseNumber_street_firstToken_postcodeSector,
-          customer.bk_postcodeArea_surname_initial_dobY = event.bk_postcodeArea_surname_initial_dobY,
-          customer.bk_postcodeSector_surname_initial = event.bk_postcodeSector_surname_initial,
-          customer.bk_postcodeSector_dobY_surname_metaphone1 = event.bk_postcodeSector_dobY_surname_metaphone1,
-          customer.bk_house_postcode_dob = event.bk_house_postcode_dob,
-          customer:Customer
-
-        CREATE (record)-[:record_for_entity]->(customer)
-
-nodeAppearances:
-  - predicate:
-      propertyKeys:
-        - eventid
-      knownValues: {}
-    label:
-      prefix: "record: "
-      key: eventid
-      type: Property
-    icon: "📝"
-
-  - predicate:
-      propertyKeys:
-        - bk_deterministic_res
-      knownValues: {}
-    label:
-      prefix: "customer: "
-      key: bk_deterministic_res
-      type: Property
-    icon: "🧑"
-
-  - predicate:
-      propertyKeys:
-        - cityLower
-      knownValues: {}
-    label:
-      prefix: "city: "
-      key: cityLower
-      type: Property
-    icon: "🌃"
-
+ 
   - predicate:
       propertyKeys:
         - countyLower
@@ -469,20 +313,7 @@ nodeAppearances:
       type: Constant
     icon: "⭐"
 
+
 quickQueries: []
 sampleQueries: []
-
-standingQueries:
-  - name: candidate-generation-query
-    pattern:
-      type: Cypher
-      query: >-
-        MATCH (c:Customer)
-        RETURN c, c.firstName
-        LIMIT 10
-    outputs:
-      - type: WriteToKafka
-        topic: customers.candidate.pairs
-        bootstrapServers: kafka:19092
-        format:
-          type: JSON
+standingQueries: []
