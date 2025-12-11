@@ -27,6 +27,7 @@ flowchart TD
   Q --> GNN[GraphSAGE<br>(adjacency-aware embeddings)]
   GNN --> MATCH[Matching Engine<br>(KNN + rules)]
   MATCH --> OUT[potential-matches topic]
+```
 
 # Pipeline Breakdown
 
