@@ -77,7 +77,7 @@ services:
     ports:
       - "8083:80"
     volumes:
-      - /c/Users/cston/Documents/projects/entity-resolution/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
 
 
   shadowtraffic:
@@ -86,7 +86,7 @@ services:
     depends_on:
       - kafka
     env_file:
-      - ./shadow-traffic/generators/license.env
+      - ./shadow-traffic/license.env
     volumes:
       - ./shadow-traffic/customers.json:/home/config.json:ro
     command:

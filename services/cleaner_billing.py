@@ -1,9 +1,14 @@
 #!/usr/bin/env python
-"""Cleaner for billing events.
+"""
+Cleaner for billing events enriched with CocoIndex embeddings.
 
-The cleaner consumes raw billing messages, normalises the payload, enriches it
-with phonetic/name/address tokens, and emits a set of compound keys for entity
-resolution.
+The general flow is as follows:
+- Normalising / standardising raw customer fields
+- Generating blocking keys
+- Embedding name/email/address/phone/signature using CocoIndex
+- Publishing enriched records to Kafka for Quine
+
+TBD - Common Nickname library is pretty defunct with ST name generator.
 """
 
 import hashlib
@@ -19,6 +24,18 @@ from metaphone import doublemetaphone
 from nameparser import HumanName
 import phonenumbers
 
+# -------------------------------
+# CocoIndex
+# -------------------------------
+try:
+    from cocoindex import Coco
+    coco = Coco(name="universal-embedder-v1")
+    COCO_ENABLED = True
+except Exception as e:
+    print("[cleaner] WARNING: CocoIndex unavailable:", e, file=sys.stderr)
+    COCO_ENABLED = False
+    coco = None
+
 RAW_TOPIC = os.getenv("RAW_TOPIC", "customers.raw")
 ENR_TOPIC = os.getenv("ENR_TOPIC", "customers.enriched")
 BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
@@ -32,10 +49,8 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # Utility helpers
 # ---------------------------------------------------------------------------
 
-
 def sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
 
 def clean_str(value: Optional[str]) -> Optional[str]:
     if value is None:
@@ -43,85 +58,70 @@ def clean_str(value: Optional[str]) -> Optional[str]:
     cleaned = value.strip()
     return cleaned if cleaned else None
 
-
 def lower_str(value: Optional[str]) -> Optional[str]:
     cleaned = clean_str(value)
     return cleaned.lower() if cleaned else None
-
 
 def initial(value: Optional[str]) -> Optional[str]:
     cleaned = clean_str(value)
     return cleaned[0].lower() if cleaned else None
 
-
 def metaphones(value: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     cleaned = clean_str(value)
     if not cleaned:
         return None, None
-    primary, secondary = doublemetaphone(cleaned)
-    return primary or None, secondary or None
+    p, s = doublemetaphone(cleaned)
+    return p or None, s or None
 
-
-def tokenize(value: Optional[str]) -> List[str]:
+def tokenise(value: Optional[str]) -> List[str]:
     if not value:
         return []
-    return [token for token in re.split(r"[^a-z0-9]+", value.lower()) if token]
+    return [t for t in re.split(r"[^a-z0-9]+", value.lower()) if t]
 
 
-def normalize_email(raw: Optional[str]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+# ---------------------------------------------------------------------------
+# Email / phone / DOB / address normalisation
+# ---------------------------------------------------------------------------
+
+def normalise_email(raw: Optional[str]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     if not raw:
         return None, None, None
+
     lowered = raw.strip().lower()
     if not EMAIL_RE.match(lowered):
         return None, None, None
 
     user_part, _, domain = lowered.partition("@")
-    domain = domain or None
-    user_normalized = user_part
-    if user_normalized:
-        # strip plus-tags and periods for common providers
-        if "+" in user_normalized:
-            user_normalized = user_normalized.split("+", 1)[0]
-        user_normalized = user_normalized.replace(".", "")
+    user_norm = user_part
+    if user_norm:
+        if "+" in user_norm:
+            user_norm = user_norm.split("+", 1)[0]
+        user_norm = user_norm.replace(".", "")
 
-    return lowered, domain, user_normalized or None
+    return lowered, domain, user_norm or None
 
-
-def normalize_phone(raw: Optional[str]) -> Dict[str, Optional[str]]:
+def normalise_phone(raw: Optional[str]) -> Dict[str, Optional[str]]:
     if not raw:
-        return {
-            "phoneE164": None,
-            "phoneCountryCode": None,
-            "phoneDigitsOnly": None,
-            "phoneAreaCode": None,
-            "phoneLast4": None,
-        }
+        return {"phoneE164": None, "phoneCountryCode": None, "phoneDigitsOnly": None,
+                "phoneAreaCode": None, "phoneLast4": None}
 
     try:
         parsed = phonenumbers.parse(raw, DEFAULT_REGION)
         if not (phonenumbers.is_possible_number(parsed) and phonenumbers.is_valid_number(parsed)):
-            raise phonenumbers.NumberParseException(0, "Invalid number")
+            raise Exception()
     except Exception:
-        return {
-            "phoneE164": None,
-            "phoneCountryCode": None,
-            "phoneDigitsOnly": None,
-            "phoneAreaCode": None,
-            "phoneLast4": None
-        }
+        return {"phoneE164": None, "phoneCountryCode": None, "phoneDigitsOnly": None,
+                "phoneAreaCode": None, "phoneLast4": None}
 
     e164 = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
-    national_number = phonenumbers.format_number(
-        parsed, phonenumbers.PhoneNumberFormat.NATIONAL
-    )
-    digits_only = re.sub(r"\D", "", national_number)
+    digits = re.sub(r"\D", "", phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.NATIONAL))
 
     return {
         "phoneE164": e164,
         "phoneCountryCode": str(parsed.country_code),
-        "phoneDigitsOnly": digits_only,
-        "phoneAreaCode": digits_only[:3] if len(digits_only) >= 3 else None,
-        "phoneLast4": digits_only[-4:] if len(digits_only) >= 4 else None
+        "phoneDigitsOnly": digits,
+        "phoneAreaCode": digits[:3] if len(digits) >= 3 else None,
+        "phoneLast4": digits[-4:] if len(digits) >= 4 else None
     }
 
 
@@ -134,14 +134,9 @@ def parse_postcode(raw: Optional[str]) -> Dict[str, Optional[str]]:
     parts = normalized.split(" ")
     outward = parts[0] if parts else None
     inward = parts[1] if len(parts) > 1 else ""
-    sector = None
-    if outward and inward:
-        sector = f"{outward} {inward[:1]}"
-    elif outward:
-        sector = outward
-
-    area_match = re.match(r"([A-Z]+)", outward or "")
-    area = area_match.group(1) if area_match else None
+    sector = f"{outward} {inward[:1]}" if outward and inward else outward
+    m = re.match(r"([A-Z]+)", outward or "")
+    area = m.group(1) if m else None
 
     return {
         "postcode": normalized,
@@ -154,24 +149,17 @@ def parse_postcode(raw: Optional[str]) -> Dict[str, Optional[str]]:
 def parse_address(raw: Optional[str]) -> Dict[str, Optional[str]]:
     cleaned = clean_str(raw)
     if not cleaned:
-        return {
-            "houseNumber": None,
-            "streetLower": None,
-            "addressTokens": [],
-        }
+        return {"houseNumber": None, "streetLower": None, "addressTokens": []}
 
-    house_number = None
-    street = cleaned
-    match = re.match(r"^(\d+)[\s,]+(.+)$", cleaned)
-    if match:
-        house_number = match.group(1)
-        street = match.group(2)
-
-    street_lower = street.lower()
+    house, street = None, cleaned
+    m = re.match(r"^(\d+)[\s,]+(.+)$", cleaned)
+    if m:
+        house = m.group(1)
+        street = m.group(2)
 
     return {
-        "houseNumber": house_number,
-        "streetLower": street_lower,
+        "houseNumber": house,
+        "streetLower": street.lower(),
         "addressTokens": tokenize(cleaned),
     }
 
@@ -179,220 +167,179 @@ def parse_address(raw: Optional[str]) -> Dict[str, Optional[str]]:
 def parse_dob(raw: Optional[str]) -> Dict[str, Optional[str]]:
     cleaned = clean_str(raw)
     if not cleaned:
-        return {
-            "dobDateOnly": None,
-            "dobYearOnly": None,
-            "dobMonthDayOnly": None,
-            "ageBucket": None,
-        }
+        return {"dobDateOnly": None, "dobYearOnly": None, "dobMonthDayOnly": None, "ageBucket": None}
 
-    normalized_cleaned = cleaned
-    if "." in cleaned:
-        main_part, frac_part = cleaned.split(".", 1)
-        if frac_part and len(frac_part) > 6:
-            normalized_cleaned = f"{main_part}.{frac_part[:6]}"
-    else:
-        normalized_cleaned = cleaned
+    try:
+        dt = datetime.fromisoformat(cleaned)
+    except Exception:
+        dt = None
+        for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y"):
+            try:
+                dt = datetime.strptime(cleaned, fmt)
+                break
+            except ValueError:
+                continue
 
-    dt: Optional[datetime] = None
-    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%d/%m/%Y"):
-        try:
-            dt = datetime.strptime(normalized_cleaned, fmt)
-            break
-        except ValueError:
-            continue
-    if dt is None:
-        try:
-            dt = datetime.fromisoformat(normalized_cleaned)
-        except ValueError:
-            return {
-                "dobDateOnly": None,
-                "dobYearOnly": None,
-                "dobMonthDayOnly": None,
-                "ageBucket": None,
-            }
+    if not dt:
+        return {"dobDateOnly": None, "dobYearOnly": None, "dobMonthDayOnly": None, "ageBucket": None}
 
-    date_only = dt.date()
-    dob_year = str(date_only.year)
-    dob_month_day = date_only.strftime("%m-%d")
-    age_bucket = compute_age_bucket(date_only)
-
+    dob = dt.date()
     return {
-        "dobDateOnly": date_only.isoformat(),
-        "dobYearOnly": dob_year,
-        "dobMonthDayOnly": dob_month_day,
-        "ageBucket": age_bucket,
+        "dobDateOnly": dob.isoformat(),
+        "dobYearOnly": str(dob.year),
+        "dobMonthDayOnly": dob.strftime("%m-%d"),
+        "ageBucket": compute_age_bucket(dob),
     }
 
 
-def compute_age_bucket(dob: date) -> str:
+def compute_age_bucket(d: date) -> str:
     today = date.today()
-    age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
-    if age < 18:
-        return "0-17"
-    if age < 25:
-        return "18-24"
-    if age < 35:
-        return "25-34"
-    if age < 45:
-        return "35-44"
-    if age < 55:
-        return "45-54"
-    if age < 65:
-        return "55-64"
-    if age < 75:
-        return "65-74"
+    age = today.year - d.year - ((today.month, today.day) < (d.month, d.day))
+    if age < 18: return "0-17"
+    if age < 25: return "18-24"
+    if age < 35: return "25-34"
+    if age < 45: return "35-44"
+    if age < 55: return "45-54"
+    if age < 65: return "55-64"
+    if age < 75: return "65-74"
     return "75+"
 
 
-def name_tokens(first: Optional[str], last: Optional[str]) -> List[str]:
-    tokens: List[str] = []
-    tokens.extend(tokenize(first or ""))
-    tokens.extend(tokenize(last or ""))
-    return tokens
+# ---------------------------------------------------------------------------
+# Embedding helper CocoIndex
+# ---------------------------------------------------------------------------
 
-
-def unwrap_payload(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Extract the business payload from Debezium-style envelopes."""
-    if not isinstance(rec, dict):
+def embed_safe(text: Optional[str]) -> Optional[List[float]]:
+    """Embed text using CocoIndex, but fail gracefully."""
+    if not COCO_ENABLED or not text:
         return None
-
-    # Some producers wrap the envelope inside {"value": {...}}
-    if isinstance(rec.get("value"), dict):
-        rec = rec["value"]
-
-    # Support envelopes where payload is nested or top-level
-    env = rec.get("payload") if isinstance(rec.get("payload"), dict) else rec
-
-    op = env.get("op")
-    after = env.get("after")
-    before = env.get("before")
-
-    if op:
-        op = str(op).lower()
-        if op in ("c", "u") and isinstance(after, dict):
-            return after
-        if op == "d" and isinstance(before, dict):
-            return before
-
-    # Fallbacks when op is missing
-    if isinstance(after, dict):
-        return after
-    if isinstance(before, dict):
-        return before
-
-    # Already looks like the business payload
-    if any(key in env for key in ("firstName", "lastName", "email", "id")):
-        return env
-
-    return None
+    try:
+        return coco.embed_text(text)
+    except Exception as e:
+        print("[cleaner] CocoIndex embedding error:", e, file=sys.stderr)
+        return None
 
 
 # ---------------------------------------------------------------------------
-# Cleaning function
+# MAIN cleaning
 # ---------------------------------------------------------------------------
 
 def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     cleaned: Dict[str, Any] = {}
 
-    # Name parts
-    first_raw = rec.get("firstName")
-    last_raw = rec.get("lastName")
-    title_raw = rec.get("title")
+    # ---- NAME ----
+    first_raw, last_raw = rec.get("firstName"), rec.get("lastName")
+    first_lower, last_lower = lower_str(first_raw), lower_str(last_raw)
+    first_dm1, _ = metaphones(first_raw)
+    last_dm1, _ = metaphones(last_raw)
 
-    first_lower = lower_str(first_raw)
-    last_lower = lower_str(last_raw)
+    cleaned.update({
+        "firstName": clean_str(first_raw),
+        "lastName": clean_str(last_raw),
+        "firstNameLower": first_lower,
+        "lastNameLower": last_lower,
+        "firstNameInitial": initial(first_raw),
+        "lastNameInitial": initial(last_raw),
+        "firstNameMetaphone1": first_dm1,
+        "lastNameMetaphone1": last_dm1,
+    })
 
-    first_dm1, first_dm2 = metaphones(first_raw)
-    last_dm1, last_dm2 = metaphones(last_raw)
-
-    cleaned.update(
-        {
-            "firstName": clean_str(first_raw),
-            "lastName": clean_str(last_raw),
-            "firstNameLower": first_lower,
-            "firstNameInitial": initial(first_raw),
-            "firstNameMetaphone1": first_dm1,
-            "firstNameMetaphone2": first_dm2,
-            "lastNameLower": last_lower,
-            "lastNameInitial": initial(last_raw),
-            "lastNameMetaphone1": last_dm1,
-            "lastNameMetaphone2": last_dm2,
-        }
-    )
-
-    # Prefix/suffix using HumanName
-    name_obj = HumanName(
-        " ".join(part for part in [title_raw, first_raw, last_raw] if part)
-    )
+    # Prefix / suffix parsing
+    name_obj = HumanName(" ".join([p for p in [rec.get("title"), first_raw, last_raw] if p]))
     cleaned["namePrefix"] = lower_str(name_obj.title)
     cleaned["nameSuffix"] = lower_str(name_obj.suffix)
-    cleaned["titleNorm"] = lower_str(title_raw)
-    cleaned["nameTokens"] = name_tokens(first_raw, last_raw)
 
-    # DOB
-    dob_parts = parse_dob(rec.get("dob"))
-    cleaned.update(dob_parts)
+    cleaned["nameTokens"] = tokenize(f"{first_raw} {last_raw}")
 
-    # Email
+    # ---- DOB ----
+    cleaned.update(parse_dob(rec.get("dob")))
+
+    # ---- EMAIL ----
     email_lower, email_domain, email_user_norm = normalize_email(rec.get("email"))
-    cleaned.update(
-        {
-            "emailLower": email_lower,
-            "emailDomain": email_domain,
-            "emailUserPartNormalized": email_user_norm,
-        }
-    )
+    cleaned.update({
+        "emailLower": email_lower,
+        "emailDomain": email_domain,
+        "emailUserPartNormalized": email_user_norm,
+    })
 
-    # Phone
-    phone_parts = normalize_phone(rec.get("phone"))
-    cleaned.update(phone_parts)
+    # ---- PHONE ----
+    cleaned.update(normalize_phone(rec.get("phone")))
 
-    # Address & postcode
-    address_parts = parse_address(rec.get("address"))
-    cleaned.update(address_parts)
+    # ---- ADDRESS ----
+    addr = parse_address(rec.get("address"))
+    cleaned.update(addr)
 
-    postcode_parts = parse_postcode(rec.get("postcode"))
-    cleaned.update(postcode_parts)
+    # ---- POSTCODE ----
+    cleaned.update(parse_postcode(rec.get("postcode")))
 
     cleaned["cityLower"] = lower_str(rec.get("city"))
     cleaned["countyLower"] = lower_str(rec.get("county"))
 
-    # Derived hashes
+    # ---- HASHES ----
     cleaned["personNameHash"] = (
         sha256(f"{first_lower}|{last_lower}") if first_lower or last_lower else None
     )
     cleaned["personAddressHash"] = (
-        sha256(
-            "|".join(
-                filter(
-                    None,
-                    [
-                        address_parts.get("houseNumber"),
-                        address_parts.get("streetLower"),
-                        postcode_parts.get("postcodeLower"),
-                    ],
-                )
-            )
-        )
-        if address_parts.get("houseNumber") or address_parts.get("streetLower") or postcode_parts.get("postcodeLower")
+        sha256("|".join(filter(None, [
+            addr.get("houseNumber"), addr.get("streetLower"), cleaned.get("postcodeLower")
+        ])))
+        if addr.get("houseNumber") or addr.get("streetLower") or cleaned.get("postcodeLower")
         else None
     )
 
-    # Compound keys
+    # ---- BLOCKING KEYS ----
     cleaned.update(compound_keys(cleaned))
 
-    # Include original identifiers
-    cleaned["custsourceid"] = clean_str(rec.get("id"))
-    cleaned["eventid"] = rec.get("eventid")
+# -------------------------------------------------------------------
+# COCO Embeddings
+# Reminder to self:
+# You stripped address from signature because it was noisy
+# Don't embed DOB, send to ML as a feature as is
+# -------------------------------------------------------------------
+
+    # 1) Name embdding
+    full_name = " ".join([cleaned.get("firstNameLower") or "",
+                          cleaned.get("lastNameLower") or ""]).strip()
+    cleaned["nameEmbedding"] = embed_safe(full_name)
+
+    # 2) Email embedding
+    if cleaned.get("emailLower"):
+        cleaned["emailEmbedding"] = embed_safe(
+            f"{email_user_norm or ''} {email_domain or ''}"
+        )
+    else:
+        cleaned["emailEmbedding"] = None
+
+    # 3) Address embedding
+    address_text = " ".join(filter(None, [
+        addr.get("houseNumber"),
+        addr.get("streetLower"),
+        cleaned.get("postcodeLower"),
+    ]))
+    cleaned["addressEmbedding"] = embed_safe(address_text)
+
+    # 4) Phone embedding
+    phone_text = " ".join(filter(None, [
+        cleaned.get("phoneCountryCode"),
+        cleaned.get("phoneDigitsOnly"),
+    ]))
+    cleaned["phoneEmbedding"] = embed_safe(phone_text)
+
+    # 5) Signature embedding
+    signature = " ".join(filter(None, [
+        cleaned.get("firstNameLower"),
+        cleaned.get("lastNameLower"),
+        cleaned.get("emailUserPartNormalized"),
+        cleaned.get("phoneDigitsOnly"),
+        cleaned.get("postcodeLower")
+    ]))
+    cleaned["signatureEmbedding"] = embed_safe(signature)
 
     return cleaned
-
 
 # ---------------------------------------------------------------------------
 # Compound keys
 # ---------------------------------------------------------------------------
-
 
 def compound_keys(data: Dict[str, Any]) -> Dict[str, Optional[str]]:
     def join(*parts: Optional[str]) -> Optional[str]:
@@ -550,68 +497,61 @@ def compound_keys(data: Dict[str, Any]) -> Dict[str, Optional[str]]:
 
     return keys
 
-
 # ---------------------------------------------------------------------------
-# Main loop
+# Main Kafka loop
 # ---------------------------------------------------------------------------
-
 
 def main():
-    consumer_conf = {
+    consumer = Consumer({
         "bootstrap.servers": BOOTSTRAP,
         "group.id": GROUP_ID,
         "auto.offset.reset": "earliest",
-    }
-    producer_conf = {
+    })
+    producer = Producer({
         "bootstrap.servers": BOOTSTRAP,
         "enable.idempotence": True,
         "linger.ms": 10,
         "compression.type": "lz4",
-    }
+    })
 
-    consumer = Consumer(consumer_conf)
-    producer = Producer(producer_conf)
-
-    print(f"[cleaner] Consuming from {RAW_TOPIC}, producing to {ENR_TOPIC}")
+    print(f"[cleaner] Consuming {RAW_TOPIC}, producing {ENR_TOPIC}")
     consumer.subscribe([RAW_TOPIC])
 
     try:
         while True:
             msg = consumer.poll(1.0)
-            if msg is None:
+            if not msg:
                 continue
             if msg.error():
                 print("Consumer error:", msg.error(), file=sys.stderr)
                 continue
 
             try:
-                rec = json.loads(msg.value().decode("utf-8"))
-            except json.JSONDecodeError as exc:
-                print("Bad JSON:", exc, file=sys.stderr)
+                rec = json.loads(msg.value())
+            except Exception:
+                print("[cleaner] Bad JSON", file=sys.stderr)
                 continue
 
             payload = unwrap_payload(rec)
             if not isinstance(payload, dict):
-                print("Skipping record without usable payload", file=sys.stderr)
+                print("[cleaner] No usable payload", file=sys.stderr)
                 continue
 
-            cleaned = clean_record(payload)
+            enriched = clean_record(payload)
 
-            # Derive outbound key from the incoming Kafka key (fallback to cleaned id)
-            raw_key = msg.key()
-            if isinstance(raw_key, (bytes, bytearray)):
-                key_value = raw_key.decode("utf-8", errors="ignore")
-            elif raw_key is None:
-                key_value = cleaned.get("id") or ""
+            key = msg.key()
+            if isinstance(key, (bytes, bytearray)):
+                key_val = key.decode("utf-8", errors="ignore")
             else:
-                key_value = str(raw_key)
+                key_val = enriched.get("id") or ""
 
-            if not cleaned.get("id") and key_value:
-                cleaned["id"] = key_value
+            if "id" not in enriched:
+                enriched["id"] = key_val
+
             producer.produce(
                 ENR_TOPIC,
-                key=f"customers:{key_value}".encode("utf-8"),
-                value=json.dumps(cleaned).encode("utf-8"),
+                key=f"customers:{key_val}".encode("utf-8"),
+                value=json.dumps(enriched).encode("utf-8"),
             )
             producer.poll(0)
 
@@ -619,7 +559,7 @@ def main():
         print("Shutting down cleaner...")
     finally:
         consumer.close()
-        producer.flush(10)
+        producer.flush()
 
 
 if __name__ == "__main__":
