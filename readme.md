@@ -21,11 +21,11 @@ Quine does not natively support GraphSage, or cosine similarity so we use pgvect
 ```mermaid
 flowchart TD
   ST[ShadowTraffic] --> K1[Kafka (raw topics)]
-  K1 --> C[Cleaner.py<br>(standardise + blocking keys + CocoIndex embeddings)]
-  C --> K2[Kafka (customers.enriched)]
-  K2 --> Q[Quine<br>(graph ingestion + standing queries)]
-  Q --> GNN[GraphSAGE<br>(adjacency-aware embeddings)]
-  GNN --> MATCH[Matching Engine<br>(KNN + rules)]
+  K1 --> C[Cleaner.py<br>standardise + blocking keys + CocoIndex embeddings]
+  C --> K2[Kafka customers.enriched]
+  K2 --> Q[Quine<br>graph ingestion + standing queries]
+  Q --> GNN[GraphSAGE<br>adjacency-aware embeddings]
+  GNN --> MATCH[Matching Engine<br>KNN + rules]
   MATCH --> OUT[potential-matches topic]
 ```
 
