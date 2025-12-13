@@ -4,10 +4,11 @@ contributor: you
 summary: Resolve Kafka customer events into Record and Customer entity nodes
 description: >
   Each Kafka event becomes a unique Record node. Customers are uniquely
-  identified by the bk_deterministic_res composite key (as an internal Quine
-  node id via idFrom). A Customer is automatically created if not found.
-  Kafka id/custsourceid is stored only as a property. Address parts are modeled
-  as nodes linked from the resolved Customer.
+  identified by bk_deterministic_res via idFrom("customer", ...). If
+  bk_deterministic_res is missing, fall back to an event-scoped customer id.
+  Transit nodes (address parts) are created/linked per value (idempotently),
+  and new transit values can be added to an existing customer over time.
+  BlockingKey nodes are created/linked per value (idempotently).
 
 ingestStreams:
   - type: KafkaIngest
@@ -18,143 +19,80 @@ ingestStreams:
       type: CypherJson
       query: >-
         WITH $that AS event
-        MATCH
-          (record),
-          (customer),
-          (houseNumber),
-          (street),
-          (city),
-          (county),
-          (postcode),
-          (postcodeSector),
-          (postcodeArea),
-          (bk_lname_dob),
-          (bk_person_namehash_dob),
-          (bk_dob_phone),
-          (bk_dob_email),
-          (bk_house_postcode_dob)
-        WHERE id(record) = idFrom(event.eventid)
-          AND id(customer) = idFrom("customer", CASE WHEN event.bk_deterministic_res IS NULL THEN -1 ELSE event.bk_deterministic_res END)
-          AND id(houseNumber) = idFrom("houseNumber", CASE WHEN event.houseNumber IS NULL THEN -1 ELSE event.houseNumber END)
-          AND id(street) = idFrom("street", CASE WHEN event.streetLower IS NULL THEN -1 ELSE event.streetLower END)
-          AND id(city) = idFrom("city", CASE WHEN event.cityLower IS NULL THEN -1 ELSE event.cityLower END)
-          AND id(county) = idFrom("county", CASE WHEN event.countyLower IS NULL THEN -1 ELSE event.countyLower END)
-          AND id(postcode) = idFrom("postcode", CASE WHEN event.postcodeLower IS NULL THEN -1 ELSE event.postcodeLower END)
-          AND id(postcodeSector) = idFrom("postcodeSector", CASE WHEN event.postcodeSector IS NULL THEN -1 ELSE event.postcodeSector END)
-          AND id(postcodeArea) = idFrom("postcodeArea", CASE WHEN event.postcodeArea IS NULL THEN -1 ELSE event.postcodeArea END)
-          AND id(bk_lname_dob) = idFrom("BlockingKey", CASE WHEN event.bk_lname_dob IS NULL THEN -1 ELSE event.bk_lname_dob END)
-          AND id(bk_person_namehash_dob) = idFrom("BlockingKey", CASE WHEN event.bk_person_namehash_dob IS NULL THEN -1 ELSE event.bk_person_namehash_dob END)
-          AND id(bk_dob_phone) = idFrom("BlockingKey", CASE WHEN event.bk_dob_phone IS NULL THEN -1 ELSE event.bk_dob_phone END)
-          AND id(bk_dob_email) = idFrom("BlockingKey", CASE WHEN event.bk_dob_email IS NULL THEN -1 ELSE event.bk_dob_email END)
-          AND id(bk_house_postcode_dob) = idFrom("BlockingKey", CASE WHEN event.bk_house_postcode_dob IS NULL THEN -1 ELSE event.bk_house_postcode_dob END)
 
-        FOREACH (p IN CASE WHEN event.houseNumber IS NULL THEN [] ELSE [event.houseNumber] END |
-          SET houseNumber.houseNumber = p
-          CREATE (customer)-[:HAS_HOUSE_NUMBER]->(houseNumber)
-        )
+        /* ------------------------------------------------------------
+           Core nodes: Record + Customer
+           - Record is always unique per eventid
+           - Customer is deterministic by bk_deterministic_res, else event-scoped fallback
+        ------------------------------------------------------------ */
+        MATCH (record), (customer)
+        WHERE id(record) = idFrom("record", event.eventid)
+          AND id(customer) = idFrom(
+            "customer",
+            coalesce(event.bk_deterministic_res, "record:" + event.eventid)
+          )
 
-        FOREACH (p IN CASE WHEN event.streetLower IS NULL THEN [] ELSE [event.streetLower] END |
-          SET street.streetLower = p
-          CREATE (customer)-[:HAS_STREET]->(street)
-        )
-
-        FOREACH (p IN CASE WHEN event.cityLower IS NULL THEN [] ELSE [event.cityLower] END |
-          SET city.cityLower = p
-          CREATE (customer)-[:IN_CITY]->(city)
-        )
-
-        FOREACH (p IN CASE WHEN event.countyLower IS NULL THEN [] ELSE [event.countyLower] END |
-          SET county.countyLower = p
-          CREATE (customer)-[:IN_COUNTY]->(county)
-        )
-
-        FOREACH (p IN CASE WHEN event.postcodeLower IS NULL THEN [] ELSE [event.postcodeLower] END |
-          SET postcode.postcodeLower = p,
-              postcode.postcode = event.postcode
-          CREATE (customer)-[:IN_POSTCODE]->(postcode)
-        )
-
-        FOREACH (p IN CASE WHEN event.postcodeSector IS NULL THEN [] ELSE [event.postcodeSector] END |
-          SET postcodeSector.postcodeSector = p
-          CREATE (customer)-[:IN_POSTCODE_SECTOR]->(postcodeSector)
-        )
-
-        FOREACH (p IN CASE WHEN event.postcodeArea IS NULL THEN [] ELSE [event.postcodeArea] END |
-          SET postcodeArea.postcodeArea = p
-          CREATE (customer)-[:IN_POSTCODE_AREA]->(postcodeArea)
-        )
-
-        FOREACH (p IN CASE WHEN event.bk_lname_dob IS NULL THEN [] ELSE [event.bk_lname_dob] END |
-          SET bk_lname_dob.value = p, bk_lname_dob:BlockingKey
-          CREATE (customer)-[:BLOCKS_ON_LNAME_DOB]->(bk_lname_dob)
-        )
-
-        FOREACH (p IN CASE WHEN event.bk_person_namehash_dob IS NULL THEN [] ELSE [event.bk_person_namehash_dob] END |
-          SET bk_person_namehash_dob.value = p, bk_person_namehash_dob:BlockingKey
-          CREATE (customer)-[:BLOCKS_ON_NAMEHASH_DOB]->(bk_person_namehash_dob)
-        )
-
-        FOREACH (p IN CASE WHEN event.bk_dob_phone IS NULL THEN [] ELSE [event.bk_dob_phone] END |
-          SET bk_dob_phone.value = p, bk_dob_phone:BlockingKey
-          CREATE (customer)-[:BLOCKS_ON_DOB_PHONE]->(bk_dob_phone)
-        )
-
-        FOREACH (p IN CASE WHEN event.bk_dob_email IS NULL THEN [] ELSE [event.bk_dob_email] END |
-          SET bk_dob_email.value = p, bk_dob_email:BlockingKey
-          CREATE (customer)-[:BLOCKS_ON_DOB_EMAIL]->(bk_dob_email)
-        )
-
-        FOREACH (p IN CASE WHEN event.bk_house_postcode_dob IS NULL THEN [] ELSE [event.bk_house_postcode_dob] END |
-          SET bk_house_postcode_dob.value = p, bk_house_postcode_dob:BlockingKey
-          CREATE (customer)-[:BLOCKS_ON_DOB_HOUSE_POSTCODE]->(bk_house_postcode_dob)
-        )
-
+        /* Record props */
         SET
-          record = event,
+          record:Record,
           record.eventid = event.eventid,
           record.custsourceid = event.custsourceid,
-          record.bk_deterministic_res = event.bk_deterministic_res,
-          record:Record,
+          record.bk_deterministic_res = event.bk_deterministic_res
 
+        /* Customer props (include postcodeSector + postcodeArea explicitly) */
+        SET
+          customer:Customer,
           customer.custsourceid = event.custsourceid,
+
           customer.firstName = event.firstName,
           customer.lastName = event.lastName,
           customer.firstNameLower = event.firstNameLower,
           customer.firstNameInitial = event.firstNameInitial,
           customer.firstNameMetaphone1 = event.firstNameMetaphone1,
           customer.firstNameMetaphone2 = event.firstNameMetaphone2,
+
           customer.lastNameLower = event.lastNameLower,
           customer.lastNameInitial = event.lastNameInitial,
           customer.lastNameMetaphone1 = event.lastNameMetaphone1,
           customer.lastNameMetaphone2 = event.lastNameMetaphone2,
+
           customer.namePrefix = event.namePrefix,
           customer.nameSuffix = event.nameSuffix,
           customer.titleNorm = event.titleNorm,
           customer.nameTokens = event.nameTokens,
+
           customer.dobDateOnly = event.dobDateOnly,
           customer.dobYearOnly = event.dobYearOnly,
           customer.dobMonthDayOnly = event.dobMonthDayOnly,
           customer.ageBucket = event.ageBucket,
+
           customer.emailLower = event.emailLower,
           customer.emailDomain = event.emailDomain,
           customer.emailUserPartNormalized = event.emailUserPartNormalized,
+
           customer.phoneE164 = event.phoneE164,
           customer.phoneCountryCode = event.phoneCountryCode,
           customer.phoneDigitsOnly = event.phoneDigitsOnly,
           customer.phoneAreaCode = event.phoneAreaCode,
           customer.phoneLast4 = event.phoneLast4,
+
           customer.houseNumber = event.houseNumber,
           customer.streetLower = event.streetLower,
           customer.addressTokens = event.addressTokens,
+
           customer.postcode = event.postcode,
           customer.postcodeLower = event.postcodeLower,
           customer.postcodeSector = event.postcodeSector,
           customer.postcodeArea = event.postcodeArea,
+
           customer.cityLower = event.cityLower,
           customer.countyLower = event.countyLower,
+
           customer.personNameHash = event.personNameHash,
           customer.personAddressHash = event.personAddressHash,
+
           customer.bk_deterministic_res = event.bk_deterministic_res,
+
           customer.bk_lname_dob = event.bk_lname_dob,
           customer.bk_lname_init_dobY = event.bk_lname_init_dobY,
           customer.bk_lname_dm_dobY = event.bk_lname_dm_dobY,
@@ -164,18 +102,23 @@ ingestStreams:
           customer.bk_fname_metaphone1_lname_metaphone1 = event.bk_fname_metaphone1_lname_metaphone1,
           customer.bk_fname_initial_lname_initial = event.bk_fname_initial_lname_initial,
           customer.bk_fname_initial_lname_lower_dobY = event.bk_fname_initial_lname_lower_dobY,
+
           customer.bk_person_namehash_dob = event.bk_person_namehash_dob,
           customer.bk_person_namehash_phone_last4 = event.bk_person_namehash_phone_last4,
           customer.bk_person_namehash_email_domain = event.bk_person_namehash_email_domain,
+
           customer.bk_dob_phone = event.bk_dob_phone,
           customer.bk_dob_email = event.bk_dob_email,
           customer.bk_dob_house_postcode = event.bk_dob_house_postcode,
+
           customer.bk_dobY_lname_metaphone1 = event.bk_dobY_lname_metaphone1,
           customer.bk_dobY_lname_lower = event.bk_dobY_lname_lower,
           customer.bk_dobY_phone_last4 = event.bk_dobY_phone_last4,
+
           customer.bk_ageBucket_lname_initial = event.bk_ageBucket_lname_initial,
           customer.bk_ageBucket_lname_metaphone1 = event.bk_ageBucket_lname_metaphone1,
           customer.bk_ageBucket_phone_country = event.bk_ageBucket_phone_country,
+
           customer.bk_email_dob = event.bk_email_dob,
           customer.bk_email_domain_surname = event.bk_email_domain_surname,
           customer.bk_email_domain_dobY = event.bk_email_domain_dobY,
@@ -186,6 +129,7 @@ ingestStreams:
           customer.bk_email_domain_lname_initial_dobY = event.bk_email_domain_lname_initial_dobY,
           customer.bk_email_domain_lname_metaphone1_dobY = event.bk_email_domain_lname_metaphone1_dobY,
           customer.bk_email_lower_surname_lower = event.bk_email_lower_surname_lower,
+
           customer.bk_phone_dob = event.bk_phone_dob,
           customer.bk_phone_last4_dobY = event.bk_phone_last4_dobY,
           customer.bk_phone_digits_surname_initial = event.bk_phone_digits_surname_initial,
@@ -195,6 +139,7 @@ ingestStreams:
           customer.bk_phoneE164_lname_initial = event.bk_phoneE164_lname_initial,
           customer.bk_phoneE164_lname_metaphone1 = event.bk_phoneE164_lname_metaphone1,
           customer.bk_phone_last4_email_domain = event.bk_phone_last4_email_domain,
+
           customer.bk_house_postcode = event.bk_house_postcode,
           customer.bk_house_surname_initial = event.bk_house_surname_initial,
           customer.bk_house_surnameDM_dobY = event.bk_house_surnameDM_dobY,
@@ -204,15 +149,175 @@ ingestStreams:
           customer.bk_postcodeArea_surname_initial_dobY = event.bk_postcodeArea_surname_initial_dobY,
           customer.bk_postcodeSector_surname_initial = event.bk_postcodeSector_surname_initial,
           customer.bk_postcodeSector_dobY_surname_metaphone1 = event.bk_postcodeSector_dobY_surname_metaphone1,
-          customer.bk_house_postcode_dob = event.bk_house_postcode_dob,
-          customer:Customer
+          customer.bk_house_postcode_dob = event.bk_house_postcode_dob
 
-        CREATE (record)-[:record_for_entity]->(customer)
+        /* Idempotent Record->Customer link */
+        WITH event, record, customer
+        OPTIONAL MATCH (record)-[rfe:RECORD_FOR_ENTITY]->(customer)
+        WITH event, record, customer, rfe
+        FOREACH (_ IN CASE WHEN rfe IS NULL THEN [1] ELSE [] END |
+          CREATE (record)-[:RECORD_FOR_ENTITY]->(customer)
+        )
 
-        
+        /* ------------------------------------------------------------
+           Transit nodes + edges (idempotent per value)
+           - Existing customer can get new transit values over time
+        ------------------------------------------------------------ */
 
-        
-        
+        /* HouseNumber */
+        WITH event, record, customer
+        UNWIND CASE WHEN event.houseNumber IS NULL THEN [] ELSE [event.houseNumber] END AS hnVal
+        MATCH (houseNumber)
+        WHERE id(houseNumber) = idFrom("houseNumber", hnVal)
+        OPTIONAL MATCH (customer)-[rhn:HAS_HOUSE_NUMBER]->(houseNumber)
+        WITH event, record, customer, houseNumber, rhn, hnVal
+        FOREACH (_ IN CASE WHEN rhn IS NULL THEN [1] ELSE [] END |
+          SET houseNumber.houseNumber = hnVal
+          CREATE (customer)-[:HAS_HOUSE_NUMBER]->(houseNumber)
+        )
+
+        /* Street */
+        WITH event, record, customer
+        UNWIND CASE WHEN event.streetLower IS NULL THEN [] ELSE [event.streetLower] END AS stVal
+        MATCH (street)
+        WHERE id(street) = idFrom("street", stVal)
+        OPTIONAL MATCH (customer)-[rst:HAS_STREET]->(street)
+        WITH event, record, customer, street, rst, stVal
+        FOREACH (_ IN CASE WHEN rst IS NULL THEN [1] ELSE [] END |
+          SET street.streetLower = stVal
+          CREATE (customer)-[:HAS_STREET]->(street)
+        )
+
+        /* City */
+        WITH event, record, customer
+        UNWIND CASE WHEN event.cityLower IS NULL THEN [] ELSE [event.cityLower] END AS cityVal
+        MATCH (city)
+        WHERE id(city) = idFrom("city", cityVal)
+        OPTIONAL MATCH (customer)-[rc:IN_CITY]->(city)
+        WITH event, record, customer, city, rc, cityVal
+        FOREACH (_ IN CASE WHEN rc IS NULL THEN [1] ELSE [] END |
+          SET city.cityLower = cityVal
+          CREATE (customer)-[:IN_CITY]->(city)
+        )
+
+        /* County */
+        WITH event, record, customer
+        UNWIND CASE WHEN event.countyLower IS NULL THEN [] ELSE [event.countyLower] END AS countyVal
+        MATCH (county)
+        WHERE id(county) = idFrom("county", countyVal)
+        OPTIONAL MATCH (customer)-[rco:IN_COUNTY]->(county)
+        WITH event, record, customer, county, rco, countyVal
+        FOREACH (_ IN CASE WHEN rco IS NULL THEN [1] ELSE [] END |
+          SET county.countyLower = countyVal
+          CREATE (customer)-[:IN_COUNTY]->(county)
+        )
+
+        /* Postcode (lower + original postcode) */
+        WITH event, record, customer
+        UNWIND CASE WHEN event.postcodeLower IS NULL THEN [] ELSE [event.postcodeLower] END AS pcVal
+        MATCH (postcode)
+        WHERE id(postcode) = idFrom("postcode", pcVal)
+        OPTIONAL MATCH (customer)-[rpc:IN_POSTCODE]->(postcode)
+        WITH event, record, customer, postcode, rpc, pcVal
+        FOREACH (_ IN CASE WHEN rpc IS NULL THEN [1] ELSE [] END |
+          SET postcode.postcodeLower = pcVal,
+              postcode.postcode = event.postcode
+          CREATE (customer)-[:IN_POSTCODE]->(postcode)
+        )
+
+        /* PostcodeSector */
+        WITH event, record, customer
+        UNWIND CASE WHEN event.postcodeSector IS NULL THEN [] ELSE [event.postcodeSector] END AS pcsVal
+        MATCH (postcodeSector)
+        WHERE id(postcodeSector) = idFrom("postcodeSector", pcsVal)
+        OPTIONAL MATCH (customer)-[rpcs:IN_POSTCODE_SECTOR]->(postcodeSector)
+        WITH event, record, customer, postcodeSector, rpcs, pcsVal
+        FOREACH (_ IN CASE WHEN rpcs IS NULL THEN [1] ELSE [] END |
+          SET postcodeSector.postcodeSector = pcsVal
+          CREATE (customer)-[:IN_POSTCODE_SECTOR]->(postcodeSector)
+        )
+
+        /* PostcodeArea */
+        WITH event, record, customer
+        UNWIND CASE WHEN event.postcodeArea IS NULL THEN [] ELSE [event.postcodeArea] END AS pcaVal
+        MATCH (postcodeArea)
+        WHERE id(postcodeArea) = idFrom("postcodeArea", pcaVal)
+        OPTIONAL MATCH (customer)-[rpca:IN_POSTCODE_AREA]->(postcodeArea)
+        WITH event, record, customer, postcodeArea, rpca, pcaVal
+        FOREACH (_ IN CASE WHEN rpca IS NULL THEN [1] ELSE [] END |
+          SET postcodeArea.postcodeArea = pcaVal
+          CREATE (customer)-[:IN_POSTCODE_AREA]->(postcodeArea)
+        )
+
+        /* ------------------------------------------------------------
+           BlockingKey nodes + edges (idempotent per value)
+        ------------------------------------------------------------ */
+
+        /* BLOCKS_ON_LNAME_DOB */
+        WITH event, record, customer
+        UNWIND CASE WHEN event.bk_lname_dob IS NULL THEN [] ELSE [event.bk_lname_dob] END AS bk1
+        MATCH (bk_lname_dob)
+        WHERE id(bk_lname_dob) = idFrom("BlockingKey", bk1)
+        OPTIONAL MATCH (customer)-[rbk1:BLOCKS_ON_LNAME_DOB]->(bk_lname_dob)
+        WITH event, record, customer, bk_lname_dob, rbk1, bk1
+        FOREACH (_ IN CASE WHEN rbk1 IS NULL THEN [1] ELSE [] END |
+          SET bk_lname_dob:BlockingKey,
+              bk_lname_dob.value = bk1
+          CREATE (customer)-[:BLOCKS_ON_LNAME_DOB]->(bk_lname_dob)
+        )
+
+        /* BLOCKS_ON_NAMEHASH_DOB */
+        WITH event, record, customer
+        UNWIND CASE WHEN event.bk_person_namehash_dob IS NULL THEN [] ELSE [event.bk_person_namehash_dob] END AS bk2
+        MATCH (bk_person_namehash_dob)
+        WHERE id(bk_person_namehash_dob) = idFrom("BlockingKey", bk2)
+        OPTIONAL MATCH (customer)-[rbk2:BLOCKS_ON_NAMEHASH_DOB]->(bk_person_namehash_dob)
+        WITH event, record, customer, bk_person_namehash_dob, rbk2, bk2
+        FOREACH (_ IN CASE WHEN rbk2 IS NULL THEN [1] ELSE [] END |
+          SET bk_person_namehash_dob:BlockingKey,
+              bk_person_namehash_dob.value = bk2
+          CREATE (customer)-[:BLOCKS_ON_NAMEHASH_DOB]->(bk_person_namehash_dob)
+        )
+
+        /* BLOCKS_ON_DOB_PHONE */
+        WITH event, record, customer
+        UNWIND CASE WHEN event.bk_dob_phone IS NULL THEN [] ELSE [event.bk_dob_phone] END AS bk3
+        MATCH (bk_dob_phone)
+        WHERE id(bk_dob_phone) = idFrom("BlockingKey", bk3)
+        OPTIONAL MATCH (customer)-[rbk3:BLOCKS_ON_DOB_PHONE]->(bk_dob_phone)
+        WITH event, record, customer, bk_dob_phone, rbk3, bk3
+        FOREACH (_ IN CASE WHEN rbk3 IS NULL THEN [1] ELSE [] END |
+          SET bk_dob_phone:BlockingKey,
+              bk_dob_phone.value = bk3
+          CREATE (customer)-[:BLOCKS_ON_DOB_PHONE]->(bk_dob_phone)
+        )
+
+        /* BLOCKS_ON_DOB_EMAIL */
+        WITH event, record, customer
+        UNWIND CASE WHEN event.bk_dob_email IS NULL THEN [] ELSE [event.bk_dob_email] END AS bk4
+        MATCH (bk_dob_email)
+        WHERE id(bk_dob_email) = idFrom("BlockingKey", bk4)
+        OPTIONAL MATCH (customer)-[rbk4:BLOCKS_ON_DOB_EMAIL]->(bk_dob_email)
+        WITH event, record, customer, bk_dob_email, rbk4, bk4
+        FOREACH (_ IN CASE WHEN rbk4 IS NULL THEN [1] ELSE [] END |
+          SET bk_dob_email:BlockingKey,
+              bk_dob_email.value = bk4
+          CREATE (customer)-[:BLOCKS_ON_DOB_EMAIL]->(bk_dob_email)
+        )
+
+        /* BLOCKS_ON_DOB_HOUSE_POSTCODE */
+        WITH event, record, customer
+        UNWIND CASE WHEN event.bk_house_postcode_dob IS NULL THEN [] ELSE [event.bk_house_postcode_dob] END AS bk5
+        MATCH (bk_house_postcode_dob)
+        WHERE id(bk_house_postcode_dob) = idFrom("BlockingKey", bk5)
+        OPTIONAL MATCH (customer)-[rbk5:BLOCKS_ON_DOB_HOUSE_POSTCODE]->(bk_house_postcode_dob)
+        WITH event, record, customer, bk_house_postcode_dob, rbk5, bk5
+        FOREACH (_ IN CASE WHEN rbk5 IS NULL THEN [1] ELSE [] END |
+          SET bk_house_postcode_dob:BlockingKey,
+              bk_house_postcode_dob.value = bk5
+          CREATE (customer)-[:BLOCKS_ON_DOB_HOUSE_POSTCODE]->(bk_house_postcode_dob)
+        )
+
 nodeAppearances:
   - predicate:
       propertyKeys:
@@ -243,7 +348,7 @@ nodeAppearances:
       key: cityLower
       type: Property
     icon: "🌃"
- 
+
   - predicate:
       propertyKeys:
         - countyLower
@@ -312,7 +417,6 @@ nodeAppearances:
       value: "Canonical Customer"
       type: Constant
     icon: "⭐"
-
 
 quickQueries: []
 sampleQueries: []
