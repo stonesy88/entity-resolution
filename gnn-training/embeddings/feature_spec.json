@@ -1,0 +1,20 @@
+{
+  "model": "sentence-transformers/all-MiniLM-L6-v2",
+  "embedding_dims": {
+    "name": 384,
+    "email": 384,
+    "phone": 384,
+    "address": 384
+  },
+  "numeric_features": [
+    "dobYearOnly_normalized"
+  ],
+  "text_fields": {
+    "name": "firstNameLower, lastNameLower, firstNameMetaphone1, lastNameMetaphone1",
+    "email": "emailUserPartNormalized, emailDomain",
+    "phone": "phoneCountryCode, phoneDigitsOnly",
+    "address": "houseNumber, streetLower, cityLower, countyLower, postcodeLower, postcodeSector, postcodeArea"
+  },
+  "total_dim": 1538,
+  "num_customers": 551
+}

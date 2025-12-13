@@ -1,0 +1,16 @@
+{
+  "seed": 42,
+  "epochs": 15,
+  "batch_size_edges": 20000,
+  "lr": 0.002,
+  "weight_decay": 1e-05,
+  "hidden_dim": 256,
+  "out_dim": 128,
+  "dropout": 0.1,
+  "train_on_all_edges": false,
+  "negative_ratio": 1,
+  "num_nodes": 3744,
+  "num_edges": 8980,
+  "num_customer_nodes": 551,
+  "training_edges_used": 2919
+}

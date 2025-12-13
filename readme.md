@@ -125,7 +125,6 @@ TBD - Probably webhook for twilio to send SMS to customer to invite to confirm T
 | Component | Purpose |
 |----------|---------|
 | **Kafka** | Real-time event streaming backbone |
-| **Schema Registry** | Schema contracts for Kafka topics |
 | **Cleaner.py** | Normalisation, metaphones, blocking keys, embeddings |
 | **CocoIndex** | Text cleaning + semantic embedding generation |
 | **Quine** | Real-time graph ETL + standing queries |

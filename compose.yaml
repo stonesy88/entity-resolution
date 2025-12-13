@@ -96,7 +96,19 @@ services:
     ports:
       - "9876:8080"
 
+  pgvector:
+    image: pgvector/pgvector:pg16
+    container_name: pgvector
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: er
+      POSTGRES_USER: er
+      POSTGRES_PASSWORD: er
+    volumes:
+      - pgvector_data:/var/lib/postgresql/data
 
 volumes:
   kafka_data:
-
+  pgvector_data:
