@@ -7,7 +7,7 @@
     "address": 384
   },
   "numeric_features": [
-    "dobYearOnly_normalized"
+    "dobYearOnly_normalized",
   ],
   "text_fields": {
     "name": "firstNameLower, lastNameLower, firstNameMetaphone1, lastNameMetaphone1",
