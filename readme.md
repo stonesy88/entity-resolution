@@ -39,6 +39,8 @@ flowchart TD
   PG --> K3[Kafka customer.match_candidates]
   K3 --> Q2[Quine Match Ingest]
 
+```
+
 ## Pipeline Breakdown
 
 ### 1. Ingestion (ShadowTraffic → Kafka)
