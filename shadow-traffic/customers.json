@@ -196,7 +196,7 @@
                           "ollama": {
                             "url": "http://host.docker.internal:11434",
                             "model": "llama3.1:latest",
-                            "prompt": "You are transforming strings, not meaning. Task: Modify the input string by changing 1-3 characters.Do NOT interpret meaning.Rules: Output exactly one word- Output only the modified string <DATA>{{firstName}}</DATA>OUTPUT:"
+                            "prompt": "You are transforming strings, not meaning. Task: Modify the input string by changing 1-3 characters. Rules: Output exactly one word- Output only the modified string firstname"
                           }
                         },
                         "lastName": {
@@ -209,7 +209,7 @@
                           "ollama": {
                             "url": "http://host.docker.internal:11434",
                             "model": "llama3.1:latest",
-                            "prompt": "You are transforming strings, not meaning. Task: Modify the input string by changing 1-3 characters.Do NOT interpret meaning.Rules: Output exactly one word- Output only the modified string <DATA>{{firstName}}</DATA>OUTPUT:"
+                            "prompt": "You are transforming strings, not meaning. Task: Modify the input string by changing 1-3 characters. Rules: Output exactly one word- Output only the modified string lastname:"
                           }
                         },
                         "email": {
