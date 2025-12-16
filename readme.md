@@ -1,6 +1,6 @@
 # Customer Entity Resolution (CER) — Proof of Concept
 
-This repository demonstrates a **real-time, graph-native Entity Resolution (ER) pipeline** designed to identify when multiple systems refer to the **same underlying customer**, even in the presence of:
+This repository demonstrates a **streaming graph-native Entity Resolution (ER) pipeline** designed to identify when multiple systems refer to the **same underlying customer**, even in the presence of:
 
 - typos and spelling variation  
 - missing or partial attributes  
@@ -9,17 +9,19 @@ This repository demonstrates a **real-time, graph-native Entity Resolution (ER) 
 
 The system combines **deterministic rules**, **semantic embeddings**, and **graph learning** to produce high-quality match candidates suitable for automated or human-in-the-loop resolution.
 
+This is a **proof of concept** and is not production-ready, full of bugs and gaps.
+
 ---
 
 ## Core Technologies
 
-- **Kafka** — real-time event streaming backbone  
-- **Cleaner.py** — normalization, metaphones, blocking keys  
+- **Kafka** — event backbone  
+- **Cleaner.py** — normalisation, metaphones, blocking keys  
 - **Sentence / semantic embeddings** — names, email, phone, address  
 - **Quine** — real-time identity graph construction  
-- **GraphSAGE** — neighborhood-aware learned embeddings  
+- **GraphSAGE** — neighborhood-aware learned embeddings + feature embeddings with sentence transformers
 - **pgvector (PostgreSQL)** — fast vector similarity search  
-- **ShadowTraffic** — synthetic multi-system customer data (optional)  
+- **ShadowTraffic** — synthetic multi-system customer data [Licensed](https://shadowtraffic.io/)
 
 > ⚠️ Quine does not natively support vector similarity or GNN training, so **pgvector and GraphSAGE are used externally** and reintegrated via Kafka.
 
@@ -237,8 +239,12 @@ It is graph-native, ML-ready, and streaming-first.
 - Online GraphSAGE retraining
 - Active learning from confirmed matches
 - Custom embedding models (Ollama / domain-tuned LLMs)
-- Canonical entity materialization
+- Canonical entity materialisation
 - Merge/unmerge lifecycle management
+- Stale node embedding featres aren't handled yet
+- Kubeflow ML pipe for easy retraining
+- Server-Side Events for real-time updates
+- Fix numerous dodgy cypher queries & hydrate queries 
 
 ## Synthetic Data
 
