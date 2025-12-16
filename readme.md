@@ -9,11 +9,11 @@ This repository demonstrates a **streaming graph-native Entity Resolution (ER) p
 
 The system combines **deterministic rules**, **semantic embeddings**, and **graph learning** to produce high-quality match candidates suitable for automated or human-in-the-loop resolution.
 
-This is a **proof of concept** and is not production-ready, full of bugs and gaps.
+This is a **concept** and is not production-ready, bugs and gaps.
 
 ---
 
-## Core Technologies
+## Core "Stack"
 
 - **Kafka** — event backbone  
 - **Cleaner.py** — normalisation, metaphones, blocking keys  
@@ -21,7 +21,7 @@ This is a **proof of concept** and is not production-ready, full of bugs and gap
 - **Quine** — real-time identity graph construction  
 - **GraphSAGE** — neighborhood-aware learned embeddings + feature embeddings with sentence transformers
 - **pgvector (PostgreSQL)** — fast vector similarity search  
-- **ShadowTraffic** — synthetic multi-system customer data [Licensed](https://shadowtraffic.io/)
+- **ShadowTraffic** — [ShadowTraffic](https://shadowtraffic.io/) is a containerised service for declaratively generating data, packed with knobs to perfectly mimic your production traffic to Kafka, S3, Postgres, and more.
 
 > ⚠️ Quine does not natively support vector similarity or GNN training, so **pgvector and GraphSAGE are used externally** and reintegrated via Kafka.
 
